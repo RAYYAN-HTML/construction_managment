@@ -1,0 +1,25 @@
+.gradle/
+.gradle-*/
+.kotlin/
+.idea/
+build/
+app/build/
+local.properties
+*.apk
+
+# Local Android SDK/Gradle tooling and copied JDKs
+.tooling/
+jdkcopy/
+downloads/
+
+# Local build/debug output
+*.log
+hs_err_pid*.log
+
+# IDE and OS metadata
+*.iml
+.externalNativeBuild/
+.cxx/
+.DS_Store
+Thumbs.db
+
