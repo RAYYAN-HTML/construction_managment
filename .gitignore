@@ -15,6 +15,10 @@ downloads/
 # Local build/debug output
 *.log
 hs_err_pid*.log
+*.hprof*
+*.jks
+*.keystore
+keystore.properties
 
 # IDE and OS metadata
 *.iml

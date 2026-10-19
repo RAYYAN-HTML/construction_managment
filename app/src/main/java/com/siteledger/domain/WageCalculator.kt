@@ -1,28 +1,29 @@
 package com.siteledger.domain
 
+import com.siteledger.data.AccountDirection
 import com.siteledger.data.AttendanceStatus
 
-/** Pure calculation rule used by the payroll module when it is introduced. */
-data class WagePolicy(
-    val dailyRateMinor: Long,
-    val halfDayNumerator: Int = 1,
-    val halfDayDenominator: Int = 2,
-    val overtimeRatePerHourMinor: Long = 0,
-    val leavePaid: Boolean = false
-)
-
 object WageCalculator {
-    fun earnedMinor(status: AttendanceStatus, overtimeMinutes: Int, policy: WagePolicy): Long {
-        require(policy.dailyRateMinor >= 0 && policy.overtimeRatePerHourMinor >= 0)
-        require(policy.halfDayNumerator >= 0 && policy.halfDayDenominator > 0 && overtimeMinutes >= 0)
-        val base = when (status) {
-            AttendanceStatus.PRESENT -> policy.dailyRateMinor
-            AttendanceStatus.HALF_DAY -> policy.dailyRateMinor * policy.halfDayNumerator / policy.halfDayDenominator
-            AttendanceStatus.LEAVE -> if (policy.leavePaid) policy.dailyRateMinor else 0
-            AttendanceStatus.ABSENT -> 0
+    fun earnedMinor(status: AttendanceStatus, dailyRateMinor: Long, halfDayRateMinor: Long = dailyRateMinor / 2): Long {
+        require(dailyRateMinor >= 0) { "Daily wage cannot be negative." }
+        require(halfDayRateMinor >= 0) { "Half-day wage cannot be negative." }
+        return when (status) {
+            AttendanceStatus.PRESENT -> dailyRateMinor
+            AttendanceStatus.HALF_DAY -> halfDayRateMinor
+            AttendanceStatus.ABSENT -> 0L
         }
-        // Round to the nearest minor currency unit; never use floating point for pay.
-        val overtime = (policy.overtimeRatePerHourMinor * overtimeMinutes + 30) / 60
-        return base + overtime
     }
+}
+
+object LedgerBalances {
+    /** A positive worker balance is wages owed; a negative balance is an advance paid ahead. */
+    fun workerBalance(earnedMinor: Iterable<Long>, paymentsMinor: Iterable<Long>): Long =
+        earnedMinor.sum() - paymentsMinor.sum()
+
+    /** Positive means they owe us; negative means we owe them. */
+    fun counterpartyBalance(entries: Iterable<Pair<AccountDirection, Long>>): Long =
+        entries.sumOf { (direction, amount) ->
+            require(amount >= 0) { "Ledger amounts cannot be negative." }
+            if (direction == AccountDirection.THEY_OWE_US) amount else -amount
+        }
 }

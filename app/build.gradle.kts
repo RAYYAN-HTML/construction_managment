@@ -8,7 +8,14 @@ plugins {
 android {
     namespace = "com.siteledger"
     compileSdk = 35
-    defaultConfig { applicationId = "com.siteledger"; minSdk = 24; targetSdk = 35; versionCode = 1; versionName = "0.1.0" }
+    defaultConfig {
+        applicationId = "com.siteledger"
+        minSdk = 24
+        targetSdk = 35
+        versionCode = 1
+        versionName = "0.1.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
     buildFeatures { compose = true; buildConfig = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -37,4 +44,7 @@ dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
     debugImplementation(libs.composeUiTooling)
     testImplementation(libs.junit)
+    androidTestImplementation(libs.roomTesting)
+    androidTestImplementation(libs.androidxTestRunner)
+    androidTestImplementation(libs.androidxTestJunit)
 }

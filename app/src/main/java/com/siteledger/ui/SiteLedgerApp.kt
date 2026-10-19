@@ -1,204 +1,568 @@
 package com.siteledger.ui
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.AccountBalance
+import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.siteledger.data.*
+import com.siteledger.domain.LedgerBalances
 import kotlinx.coroutines.launch
 import java.math.BigDecimal
 import java.math.RoundingMode
+import java.text.NumberFormat
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneOffset
+import java.util.Locale
 
-private enum class Destination(val title: String) { HOME("Home"), PROJECTS("Projects"), LABOUR("Labour"), MATERIALS("Materials"), ACCOUNTS("Accounts") }
-private fun money(value: Long) = "Rs. %,d".format(value / 100)
-private fun parseMoney(text: String) = runCatching {
-    BigDecimal(text.trim()).setScale(2, RoundingMode.HALF_UP).movePointRight(2).longValueExact()
-}.getOrDefault(0L)
-
-@Composable fun SiteLedgerApp(repository: LedgerRepository) {
-    var destination by rememberSaveable { mutableStateOf(Destination.HOME) }
-    Scaffold(bottomBar = { NavigationBar { listOf(Destination.HOME to Icons.Default.Home, Destination.PROJECTS to Icons.Default.Business, Destination.LABOUR to Icons.Default.People, Destination.MATERIALS to Icons.Default.Inventory2, Destination.ACCOUNTS to Icons.Default.AccountBalance).forEach { (item, icon) -> NavigationBarItem(selected = destination == item, onClick = { destination = item }, icon = { Icon(icon, item.title) }, label = { Text(item.title) }) } } }) { padding -> Box(Modifier.padding(padding)) { when(destination) { Destination.HOME -> Dashboard(repository); Destination.PROJECTS -> Projects(repository); Destination.LABOUR -> Labour(repository); Destination.MATERIALS -> Materials(repository); Destination.ACCOUNTS -> Accounts(repository) } } }
-}
-
-@Composable private fun Dashboard(repo: LedgerRepository) {
-    val projects by repo.projects.collectAsStateWithLifecycle(emptyList()); val present by repo.presentCount().collectAsStateWithLifecycle(0); val today by repo.todayExpense().collectAsStateWithLifecycle(0L); val stock by repo.stock.collectAsStateWithLifecycle(emptyList())
-    Page("Good day") { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) { Text("Today’s site overview", style = MaterialTheme.typography.titleMedium); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) { Metric("Active projects", projects.count { it.status == ProjectStatus.ACTIVE }.toString(), Modifier.weight(1f)); Metric("Present today", present.toString(), Modifier.weight(1f)) }; Metric("Today’s expenses", money(today), Modifier.fillMaxWidth()); Text("Attention", style = MaterialTheme.typography.titleMedium); val low = stock.filter { it.quantity <= it.minimumQuantity }; if (low.isEmpty()) Text("No low-stock alerts. Add materials and receipts to start tracking inventory.") else low.forEach { ListItem(headlineContent = { Text(it.name) }, supportingContent = { Text("${it.quantity} ${it.unit} remaining • minimum ${it.minimumQuantity}") }, leadingContent = { Icon(Icons.Default.Warning, "Low stock") }) } } }
-}
-
-@Composable private fun Projects(repo: LedgerRepository) { val projects by repo.projects.collectAsStateWithLifecycle(emptyList()); var show by remember { mutableStateOf(false) }; Page("Projects", { show = true }) { if (projects.isEmpty()) Empty("No projects yet", "Create your first site to record costs, attendance, and stock.") else LazyColumn { items(projects, key = { it.id }) { p -> ListItem(headlineContent = { Text(p.name) }, supportingContent = { Text("${p.reference} • ${p.clientName.ifBlank { "No client" }} • ${p.status.name.lowercase()}") }, trailingContent = { Text(money(p.budgetAmountMinor), style = MaterialTheme.typography.labelMedium) }); HorizontalDivider() } } }; if(show) ProjectForm(repo) { show = false } }
-
-@Composable private fun Labour(repo: LedgerRepository) {
-    val projects by repo.projects.collectAsStateWithLifecycle(emptyList())
-    val unassigned by repo.unassignedWorkers.collectAsStateWithLifecycle(emptyList())
-    var selectedProjectId by remember { mutableStateOf<String?>(null) }
-    var showUnassigned by remember { mutableStateOf(false) }
-    var add by remember { mutableStateOf(false) }
-    var attendance by remember { mutableStateOf<Pair<WorkerEntity, String>?>(null) }
-    var assignment by remember { mutableStateOf<Pair<WorkerEntity, String?>?>(null) }
-    val workers by repo.workersForProject(selectedProjectId).collectAsStateWithLifecycle(emptyList())
-    LaunchedEffect(projects) {
-        if (selectedProjectId == null && projects.size == 1) selectedProjectId = projects.single().id
+private enum class Destination(val title: String) { LABOUR("Labour"), ACCOUNTS("Accounts") }
+private fun money(value: Long): String {
+    val formatter = NumberFormat.getNumberInstance(Locale.US).apply {
+        minimumFractionDigits = if (value % 100L == 0L) 0 else 2
+        maximumFractionDigits = 2
     }
-    Page("Labour", { add = true }) {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            ProjectPicker(projects, selectedProjectId, { selectedProjectId = it })
-            FilterChip(selected = showUnassigned, onClick = { showUnassigned = !showUnassigned }, label = { Text("Unassigned workers") })
-            when {
-                projects.isEmpty() -> Text("Create a project or site before adding labour.")
-                showUnassigned && unassigned.isEmpty() -> Text("All workers are assigned to a site.")
-                showUnassigned -> LazyColumn { items(unassigned, key = { it.id }) { worker ->
-                    ListItem(headlineContent = { Text(worker.fullName) }, supportingContent = { Text(worker.trade) }, trailingContent = {
-                        TextButton(onClick = { assignment = worker to null }) { Text("Assign") }
-                    })
-                    HorizontalDivider()
-                } }
-                selectedProjectId == null -> Text("Select a project to see its labour and attendance.")
-                workers.isEmpty() -> Text("No workers assigned to this site yet.")
-                else -> LazyColumn { items(workers, key = { it.id }) { worker ->
-                    val projectId = selectedProjectId
-                    ListItem(headlineContent = { Text(worker.fullName) }, supportingContent = { Text("${worker.trade} • ${money(worker.dailyWageMinor)}/day") }, trailingContent = {
-                        Row {
-                            TextButton(onClick = { attendance = worker to projectId!! }) { Text("Attendance") }
-                            TextButton(onClick = { assignment = worker to projectId }) { Text("Move") }
-                        }
-                    })
-                    HorizontalDivider()
-                } }
+    return "Rs. ${formatter.format(BigDecimal.valueOf(value, 2))}"
+}
+private fun moneyInput(value: Long) = BigDecimal.valueOf(value, 2).stripTrailingZeros().toPlainString()
+private val gainColor = Color(0xFF16803C)
+private fun parseMoney(text: String): Long? = runCatching {
+    BigDecimal(text.trim()).setScale(2, RoundingMode.HALF_UP).movePointRight(2).longValueExact().takeIf { it > 0 }
+}.getOrNull()
+private fun parseNonNegativeMoney(text: String): Long? = runCatching {
+    BigDecimal(text.trim()).setScale(2, RoundingMode.HALF_UP).movePointRight(2).longValueExact().takeIf { it >= 0 }
+}.getOrNull()
+
+@Composable
+fun SiteLedgerApp(repository: LedgerRepository) {
+    var destination by rememberSaveable { mutableStateOf(Destination.LABOUR) }
+    Scaffold(bottomBar = {
+        NavigationBar {
+            listOf(Destination.LABOUR to Icons.Default.People, Destination.ACCOUNTS to Icons.Default.AccountBalance).forEach { (item, icon) ->
+                NavigationBarItem(selected = destination == item, onClick = { destination = item }, icon = { Icon(icon, item.title) }, label = { Text(item.title) })
+            }
+        }
+    }) { padding ->
+        Box(Modifier.padding(padding)) {
+            when (destination) {
+                Destination.LABOUR -> LabourScreen(repository)
+                Destination.ACCOUNTS -> AccountsScreen(repository)
             }
         }
     }
-    if (add) WorkerForm(repo, selectedProjectId) { add = false }
-    attendance?.let { (worker, projectId) -> AttendanceForm(repo, worker, projectId) { attendance = null } }
-    assignment?.let { (worker, currentProjectId) -> AssignWorkerForm(repo, worker, projects, currentProjectId) { assignment = null } }
 }
 
-@Composable private fun Materials(repo: LedgerRepository) { val materials by repo.materials.collectAsStateWithLifecycle(emptyList()); val stock by repo.stock.collectAsStateWithLifecycle(emptyList()); val projects by repo.projects.collectAsStateWithLifecycle(emptyList()); var add by remember{mutableStateOf(false)}; var receive by remember{mutableStateOf<MaterialEntity?>(null)}; Page("Materials", {add=true}) { if(materials.isEmpty()) Empty("No materials yet", "Add cement, steel, sand, or other tracked materials.") else LazyColumn { items(stock, key={it.materialId}) { s -> ListItem(headlineContent={Text(s.name)}, supportingContent={Text("${s.quantity} ${s.unit} • min ${s.minimumQuantity}")}, trailingContent={TextButton(onClick={receive=materials.first { it.id==s.materialId }}){Text("Receive")}}); HorizontalDivider() } } }; if(add) MaterialForm(repo){add=false}; receive?.let{ReceiveForm(repo,it,projects){receive=null}} }
+@Composable
+private fun LabourScreen(repo: LedgerRepository) {
+    var selectedWorkerId by rememberSaveable { mutableStateOf<String?>(null) }
+    if (selectedWorkerId != null) {
+        WorkerProfile(repo, selectedWorkerId!!, onBack = { selectedWorkerId = null })
+        return
+    }
+    val workers by repo.workers.collectAsStateWithLifecycle(emptyList())
+    val labourTotals by repo.labourTotals.collectAsStateWithLifecycle(LabourTotals(0L, 0L))
+    var dateText by rememberSaveable { mutableStateOf(LocalDate.now().toString()) }
+    val attendance by repo.attendanceForDate(dateText).collectAsStateWithLifecycle(emptyList())
+    var addWorker by remember { mutableStateOf(false) }
+    var pickDate by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    val workerIds = workers.map { it.id }
+    var statuses by remember(dateText, workerIds, attendance) {
+        mutableStateOf(attendance.associate { it.workerId to it.status })
+    }
+    Page("Labour", onAdd = { addWorker = true }) {
+        val labourBalance = labourTotals.totalEarnedMinor - labourTotals.totalPaidMinor
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Labour totals", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                SummaryLine("Total earned", money(labourTotals.totalEarnedMinor))
+                SummaryLine("Total paid", money(labourTotals.totalPaidMinor), MaterialTheme.colorScheme.error)
+                if (labourBalance >= 0) {
+                    SummaryLine("Pending wages", money(labourBalance), if (labourBalance == 0L) gainColor else MaterialTheme.colorScheme.error)
+                } else {
+                    SummaryLine("Advance paid ahead", money(-labourBalance), gainColor)
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("Daily attendance", style = MaterialTheme.typography.titleMedium)
+            OutlinedButton(onClick = { pickDate = true }) { Text(dateText) }
+        }
+        if (workers.isEmpty()) {
+            Empty("No workers yet", "Add a worker to start recording attendance and wages.")
+            OutlinedButton(onClick = { addWorker = true }, modifier = Modifier.fillMaxWidth()) {
+                Text("Add your first worker")
+            }
+        } else {
+            Text("Choose one status for every worker. Wages are calculated automatically.", style = MaterialTheme.typography.bodySmall)
+            LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(vertical = 8.dp)) {
+                items(workers, key = { it.id }) { worker ->
+                    AttendanceRow(worker, statuses[worker.id], onStatus = { statuses = statuses + (worker.id to it) }, onAccount = { selectedWorkerId = worker.id })
+                    HorizontalDivider()
+                }
+            }
+            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            Button(
+                onClick = { scope.launch { runCatching { repo.saveAttendanceSheet(dateText, statuses) }.onSuccess { error = null }.onFailure { error = it.message } } },
+                enabled = statuses.keys == workerIds.toSet() && workerIds.isNotEmpty(),
+                modifier = Modifier.fillMaxWidth()
+            ) { Text(if (statuses.keys == workerIds.toSet() && workerIds.isNotEmpty()) "Save attendance" else "Choose status for every worker") }
+        }
+    }
+    if (addWorker) WorkerForm(repo, null, onClose = { addWorker = false })
+    if (pickDate) AttendanceDatePicker(dateText, onSelect = { dateText = it; error = null }, onClose = { pickDate = false })
+}
 
-@Composable private fun Accounts(repo: LedgerRepository) { val expenses by repo.expenses.collectAsStateWithLifecycle(emptyList()); val projects by repo.projects.collectAsStateWithLifecycle(emptyList()); var add by remember { mutableStateOf(false) }; Page("Accounts", {add=true}) { if(expenses.isEmpty()) Empty("No expenses yet", "Record an expense to see project costs here.") else LazyColumn { items(expenses, key={it.id}) { e -> ListItem(headlineContent={Text(e.category)}, supportingContent={Text("${e.description.ifBlank{"No description"}} • ${e.expenseDate}")}, trailingContent={Text(money(e.amountMinor))}); HorizontalDivider() } } }; if(add) ExpenseForm(repo,projects){add=false} }
+@Composable
+private fun AttendanceRow(worker: WorkerEntity, status: AttendanceStatus?, onStatus: (AttendanceStatus) -> Unit, onAccount: () -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f).clickable(onClick = onAccount)) {
+                Text(worker.fullName, fontWeight = FontWeight.SemiBold)
+                Text("${money(worker.dailyWageMinor)} per day", style = MaterialTheme.typography.bodySmall)
+            }
+            TextButton(onClick = onAccount) { Text("Account") }
+        }
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            AttendanceStatus.entries.forEach { choice ->
+                FilterChip(selected = status == choice, onClick = { onStatus(choice) }, label = { Text(choice.label()) })
+            }
+        }
+    }
+}
+
+private fun AttendanceStatus.label() = when (this) {
+    AttendanceStatus.PRESENT -> "Present"
+    AttendanceStatus.HALF_DAY -> "Half-day"
+    AttendanceStatus.ABSENT -> "Absent"
+}
+
+@Composable
+@OptIn(ExperimentalMaterial3Api::class)
+private fun AttendanceDatePicker(value: String, onSelect: (String) -> Unit, onClose: () -> Unit) {
+    val selectedDate = runCatching { LocalDate.parse(value) }.getOrDefault(LocalDate.now())
+    val state = rememberDatePickerState(initialSelectedDateMillis = selectedDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli())
+    DatePickerDialog(
+        onDismissRequest = onClose,
+        confirmButton = { TextButton(onClick = { state.selectedDateMillis?.let { onSelect(Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate().toString()) }; onClose() }) { Text("Select") } },
+        dismissButton = { TextButton(onClick = onClose) { Text("Cancel") } }
+    ) { DatePicker(state = state) }
+}
+
+@Composable
+private fun WorkerProfile(repo: LedgerRepository, workerId: String, onBack: () -> Unit) {
+    val worker by repo.worker(workerId).collectAsStateWithLifecycle(null)
+    val attendance by repo.workerAttendance(workerId).collectAsStateWithLifecycle(emptyList())
+    val entries by repo.workerEntries(workerId).collectAsStateWithLifecycle(emptyList())
+    var entryType by remember { mutableStateOf<WorkerEntryType?>(null) }
+    var editWorker by remember { mutableStateOf(false) }
+    var photoToView by remember { mutableStateOf<String?>(null) }
+    var attendanceToDelete by remember { mutableStateOf<AttendanceEntity?>(null) }
+    var entryToDelete by remember { mutableStateOf<WorkerLedgerEntryEntity?>(null) }
+    var deleteError by remember { mutableStateOf<String?>(null) }
+    var isDeleting by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val balance = LedgerBalances.workerBalance(attendance.map { it.earnedMinor }, entries.map { it.amountMinor })
+    Page("Worker account", onBack = onBack) {
+        if (worker == null) Text("Worker not found.") else {
+            val current = worker!!
+            Text(current.fullName, style = MaterialTheme.typography.headlineSmall)
+            Text("Full day: ${money(current.dailyWageMinor)} • Half-day: ${money(current.halfDayWageMinor)}${current.phone?.let { " • $it" } ?: ""}")
+            Text(
+                if (balance > 0) "Wages due: ${money(balance)}" else if (balance < 0) "Advance paid ahead: ${money(-balance)}" else "Settled",
+                color = when { balance > 0 -> MaterialTheme.colorScheme.error; balance < 0 -> gainColor; else -> MaterialTheme.colorScheme.onSurface },
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { entryType = WorkerEntryType.ADVANCE }, modifier = Modifier.weight(1f)) { Text("Advance") }
+                OutlinedButton(onClick = { entryType = WorkerEntryType.WAGE_PAYMENT }, modifier = Modifier.weight(1f)) { Text("Pay wage") }
+            }
+            TextButton(onClick = { editWorker = true }) { Text("Edit worker details or daily wage") }
+            Text("Ledger", style = MaterialTheme.typography.titleMedium)
+            deleteError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            LazyColumn(Modifier.weight(1f)) {
+                items(attendance, key = { it.id }) { record ->
+                    ListItem(
+                        headlineContent = { Text("${record.status.label()} • earned ${money(record.earnedMinor)}") },
+                        supportingContent = { Text(record.workDate) },
+                        trailingContent = {
+                            IconButton(onClick = { deleteError = null; attendanceToDelete = record }) {
+                                Icon(Icons.Default.Delete, contentDescription = "Delete attendance")
+                            }
+                        }
+                    )
+                    HorizontalDivider()
+                }
+                items(entries, key = { it.id }) { entry ->
+                    ListItem(
+                        headlineContent = { Text("${if (entry.entryType == WorkerEntryType.ADVANCE) "Advance paid" else "Wage payment"} • ${money(entry.amountMinor)}") },
+                        supportingContent = { Text("${entry.entryDate}${entry.note.takeIf { it.isNotBlank() }?.let { " • $it" } ?: ""}") },
+                        trailingContent = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (entry.photoPath != null) TextButton(onClick = { photoToView = entry.photoPath }) { Text("Photo") }
+                                IconButton(onClick = { deleteError = null; entryToDelete = entry }) {
+                                    Icon(Icons.Default.Delete, contentDescription = "Delete ledger entry")
+                                }
+                            }
+                        }
+                    )
+                    HorizontalDivider()
+                }
+            }
+        }
+    }
+    if (worker != null && editWorker) WorkerForm(repo, worker, onClose = { editWorker = false })
+    if (worker != null && entryType != null) WorkerEntryForm(repo, workerId, entryType!!, onClose = { entryType = null })
+    photoToView?.let { PhotoPreviewDialog(it) { photoToView = null } }
+    attendanceToDelete?.let { record ->
+        DeleteConfirmationDialog(
+            title = "Delete attendance?",
+            message = "Remove ${record.status.label().lowercase()} attendance for ${record.workDate}? The worker's balance will be recalculated.",
+            error = deleteError,
+            enabled = !isDeleting,
+            onDismiss = { if (!isDeleting) attendanceToDelete = null },
+            onConfirm = {
+                if (!isDeleting) scope.launch {
+                    isDeleting = true
+                    runCatching { repo.deleteAttendance(record.id) }
+                        .onSuccess { attendanceToDelete = null; deleteError = null }
+                        .onFailure { deleteError = it.message ?: "Could not delete attendance." }
+                    isDeleting = false
+                }
+            }
+        )
+    }
+    entryToDelete?.let { entry ->
+        DeleteConfirmationDialog(
+            title = if (entry.entryType == WorkerEntryType.ADVANCE) "Delete advance?" else "Delete wage payment?",
+            message = "Remove ${money(entry.amountMinor)} dated ${entry.entryDate}? The worker's balance will be recalculated.",
+            error = deleteError,
+            enabled = !isDeleting,
+            onDismiss = { if (!isDeleting) entryToDelete = null },
+            onConfirm = {
+                if (!isDeleting) scope.launch {
+                    isDeleting = true
+                    runCatching { repo.deleteWorkerEntry(entry.id) }
+                        .onSuccess { entryToDelete = null; deleteError = null }
+                        .onFailure { deleteError = it.message ?: "Could not delete this entry." }
+                    isDeleting = false
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun WorkerEntryForm(repo: LedgerRepository, workerId: String, type: WorkerEntryType, onClose: () -> Unit) {
+    var amount by remember { mutableStateOf("") }
+    var date by remember { mutableStateOf(LocalDate.now().toString()) }
+    var pickDate by remember { mutableStateOf(false) }
+    var note by remember { mutableStateOf("") }
+    var photo by remember { mutableStateOf<String?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    FormDialog(if (type == WorkerEntryType.ADVANCE) "Record advance" else "Record wage payment", onClose) {
+        Field("Amount (Rs)", amount) { amount = it }
+        OutlinedButton(onClick = { pickDate = true }, modifier = Modifier.fillMaxWidth()) { Text("Date: $date") }
+        Field("Note (optional)", note) { note = it }
+        PhotoAttachment(photo) { photo = it }
+        error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        SaveButton {
+            val parsed = parseMoney(amount)
+            if (parsed == null) error = "Enter an amount greater than zero." else scope.launch {
+                runCatching { repo.addWorkerEntry(workerId, type, parsed, date, note, photo) }
+                    .onSuccess { onClose() }.onFailure { error = it.message }
+            }
+        }
+    }
+    if (pickDate) AttendanceDatePicker(date, onSelect = { date = it }, onClose = { pickDate = false })
+}
+
+@Composable
+private fun AccountsScreen(repo: LedgerRepository) {
+    var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
+    if (selectedId != null) {
+        CounterpartyProfile(repo, selectedId!!, onBack = { selectedId = null })
+        return
+    }
+    val accounts by repo.counterpartyBalances.collectAsStateWithLifecycle(emptyList())
+    var add by remember { mutableStateOf(false) }
+    Page("Accounts", onAdd = { add = true }) {
+        if (accounts.isEmpty()) Empty("No accounts yet", "Add a site owner or supplier to start a ledger.") else LazyColumn {
+            items(accounts, key = { it.id }) { account ->
+                ListItem(
+                    modifier = Modifier.clickable { selectedId = account.id },
+                    headlineContent = { Text(account.name) },
+                    supportingContent = { Text(if (account.type == CounterpartyType.SITE_OWNER) "Site owner" else "Supplier") },
+                    trailingContent = {
+                        val balance = account.balanceMinor
+                    Text(
+                        if (balance > 0) "They owe ${money(balance)}" else if (balance < 0) "We owe ${money(-balance)}" else "Settled",
+                        color = when { balance > 0 -> gainColor; balance < 0 -> MaterialTheme.colorScheme.error; else -> MaterialTheme.colorScheme.onSurface },
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    }
+                )
+                HorizontalDivider()
+            }
+        }
+    }
+    if (add) CounterpartyForm(repo) { add = false }
+}
+
+@Composable
+private fun CounterpartyProfile(repo: LedgerRepository, id: String, onBack: () -> Unit) {
+    val account by repo.counterparty(id).collectAsStateWithLifecycle(null)
+    val entries by repo.counterpartyEntries(id).collectAsStateWithLifecycle(emptyList())
+    var addEntry by remember { mutableStateOf(false) }
+    var editAccount by remember { mutableStateOf(false) }
+    var photoToView by remember { mutableStateOf<String?>(null) }
+    var entryToDelete by remember { mutableStateOf<CounterpartyLedgerEntryEntity?>(null) }
+    var deleteError by remember { mutableStateOf<String?>(null) }
+    var isDeleting by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val balance = LedgerBalances.counterpartyBalance(entries.map { it.direction to it.amountMinor })
+    Page("Account details", onBack = onBack) {
+        if (account == null) Text("Account not found.") else {
+            Text(account!!.name, style = MaterialTheme.typography.headlineSmall)
+            Text(if (account!!.type == CounterpartyType.SITE_OWNER) "Site owner" else "Supplier")
+            TextButton(onClick = { editAccount = true }) { Text("Edit account details") }
+            Text(
+                if (balance > 0) "They owe us: ${money(balance)}" else if (balance < 0) "We owe them: ${money(-balance)}" else "Settled",
+                color = when { balance > 0 -> gainColor; balance < 0 -> MaterialTheme.colorScheme.error; else -> MaterialTheme.colorScheme.onSurface },
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Button(onClick = { addEntry = true }, modifier = Modifier.fillMaxWidth()) { Text("Add ledger entry") }
+            deleteError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            LazyColumn(Modifier.weight(1f)) {
+                items(entries, key = { it.id }) { entry ->
+                    ListItem(
+                        headlineContent = { Text("${if (entry.direction == AccountDirection.THEY_OWE_US) "They owe us" else "We owe them"} • ${money(entry.amountMinor)}", color = if (entry.direction == AccountDirection.THEY_OWE_US) gainColor else MaterialTheme.colorScheme.error) },
+                        supportingContent = { Text("${entry.entryDate}${entry.note.takeIf { it.isNotBlank() }?.let { " • $it" } ?: ""}") },
+                        trailingContent = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (entry.photoPath != null) TextButton(onClick = { photoToView = entry.photoPath }) { Text("Photo") }
+                                IconButton(onClick = { deleteError = null; entryToDelete = entry }) {
+                                    Icon(Icons.Default.Delete, contentDescription = "Delete ledger entry")
+                                }
+                            }
+                        }
+                    )
+                    HorizontalDivider()
+                }
+            }
+        }
+    }
+    if (addEntry) CounterpartyEntryForm(repo, id) { addEntry = false }
+    if (account != null && editAccount) CounterpartyForm(repo, account) { editAccount = false }
+    photoToView?.let { PhotoPreviewDialog(it) { photoToView = null } }
+    entryToDelete?.let { entry ->
+        DeleteConfirmationDialog(
+            title = "Delete ledger entry?",
+            message = "Remove ${money(entry.amountMinor)} dated ${entry.entryDate}? The account balance will be recalculated.",
+            error = deleteError,
+            enabled = !isDeleting,
+            onDismiss = { if (!isDeleting) entryToDelete = null },
+            onConfirm = {
+                if (!isDeleting) scope.launch {
+                    isDeleting = true
+                    runCatching { repo.deleteCounterpartyEntry(entry.id) }
+                        .onSuccess { entryToDelete = null; deleteError = null }
+                        .onFailure { deleteError = it.message ?: "Could not delete this entry." }
+                    isDeleting = false
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun CounterpartyForm(repo: LedgerRepository, account: CounterpartyEntity? = null, onClose: () -> Unit) {
+    var name by remember(account?.id) { mutableStateOf(account?.name.orEmpty()) }
+    var phone by remember(account?.id) { mutableStateOf(account?.phone.orEmpty()) }
+    var type by remember(account?.id) { mutableStateOf(account?.type ?: CounterpartyType.SITE_OWNER) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    FormDialog(if (account == null) "New account" else "Edit account", onClose) {
+        Field("Name", name) { name = it }
+        Field("Phone (optional)", phone) { phone = it }
+        Row {
+            FilterChip(type == CounterpartyType.SITE_OWNER, { type = CounterpartyType.SITE_OWNER }, label = { Text("Site owner") })
+            Spacer(Modifier.width(8.dp))
+            FilterChip(type == CounterpartyType.SUPPLIER, { type = CounterpartyType.SUPPLIER }, label = { Text("Supplier") })
+        }
+        error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        SaveButton {
+            scope.launch {
+                runCatching {
+                    if (account == null) repo.addCounterparty(name, type, phone)
+                    else repo.updateCounterparty(account.id, name, type, phone)
+                }.onSuccess { onClose() }.onFailure { error = it.message }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CounterpartyEntryForm(repo: LedgerRepository, id: String, onClose: () -> Unit) {
+    var amount by remember { mutableStateOf("") }
+    var date by remember { mutableStateOf(LocalDate.now().toString()) }
+    var pickDate by remember { mutableStateOf(false) }
+    var note by remember { mutableStateOf("") }
+    var direction by remember { mutableStateOf(AccountDirection.THEY_OWE_US) }
+    var photo by remember { mutableStateOf<String?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    FormDialog("New ledger entry", onClose) {
+        Row {
+            FilterChip(direction == AccountDirection.THEY_OWE_US, { direction = AccountDirection.THEY_OWE_US }, label = { Text("They owe us") })
+            Spacer(Modifier.width(8.dp))
+            FilterChip(direction == AccountDirection.WE_OWE_THEM, { direction = AccountDirection.WE_OWE_THEM }, label = { Text("We owe them") })
+        }
+        Text("Add the amount on the side that owes it. To reduce a balance, use the opposite side.", style = MaterialTheme.typography.bodySmall)
+        Field("Amount (Rs)", amount) { amount = it }
+        OutlinedButton(onClick = { pickDate = true }, modifier = Modifier.fillMaxWidth()) { Text("Date: $date") }
+        Field("Note (optional)", note) { note = it }
+        PhotoAttachment(photo) { photo = it }
+        error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        SaveButton {
+            val parsed = parseMoney(amount)
+            if (parsed == null) error = "Enter an amount greater than zero." else scope.launch {
+                runCatching { repo.addCounterpartyEntry(id, direction, parsed, date, note, photo) }
+                    .onSuccess { onClose() }.onFailure { error = it.message }
+            }
+        }
+    }
+    if (pickDate) AttendanceDatePicker(date, onSelect = { date = it }, onClose = { pickDate = false })
+}
+
+@Composable
+private fun WorkerForm(repo: LedgerRepository, worker: WorkerEntity?, onClose: () -> Unit) {
+    var name by remember(worker?.id) { mutableStateOf(worker?.fullName.orEmpty()) }
+    var wage by remember(worker?.id) { mutableStateOf(worker?.dailyWageMinor?.let(::moneyInput).orEmpty()) }
+    var halfDayWage by remember(worker?.id) { mutableStateOf(worker?.halfDayWageMinor?.let(::moneyInput).orEmpty()) }
+    var phone by remember(worker?.id) { mutableStateOf(worker?.phone.orEmpty()) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    FormDialog(if (worker == null) "New worker" else "Edit worker", onClose) {
+        Field("Full name", name) { name = it }
+        Field("Full-day wage (Rs)", wage) { wage = it }
+        Field("Half-day wage (Rs)", halfDayWage) { halfDayWage = it }
+        Field("Phone (optional)", phone) { phone = it }
+        error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        SaveButton {
+            val parsed = parseMoney(wage)
+            val parsedHalfDay = if (halfDayWage.isBlank()) parsed?.div(2) else parseNonNegativeMoney(halfDayWage)
+            if (parsed == null) error = "Enter a full-day wage greater than zero."
+            else if (parsedHalfDay == null) error = "Enter a valid half-day wage (zero is allowed)."
+            else scope.launch {
+                runCatching {
+                    if (worker == null) repo.addWorker(name, parsed, parsedHalfDay, phone) else repo.updateWorker(worker.id, name, parsed, parsedHalfDay, phone, worker.trade)
+                }.onSuccess { onClose() }.onFailure { error = it.message }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PhotoPreviewDialog(path: String, onClose: () -> Unit) {
+    AlertDialog(onDismissRequest = onClose, confirmButton = { TextButton(onClick = onClose) { Text("Close") } }, text = {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            val image by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, path) {
+                value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    val options = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    android.graphics.BitmapFactory.decodeFile(path, options)
+                    val sample = maxOf(1, maxOf(options.outWidth / 1400, options.outHeight / 1400))
+                    android.graphics.BitmapFactory.decodeFile(path, android.graphics.BitmapFactory.Options().apply { inSampleSize = sample })?.asImageBitmap()
+                }
+            }
+            image?.let { androidx.compose.foundation.Image(it, "Payment proof", Modifier.fillMaxWidth(), contentScale = androidx.compose.ui.layout.ContentScale.Fit) }
+                ?: Text("Photo could not be opened.")
+        }
+    })
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable private fun Page(title:String, onAdd:(()->Unit)?=null, content:@Composable ColumnScope.()->Unit) { Scaffold(topBar={TopAppBar(title={Text(title)}, actions={if(onAdd!=null) IconButton(onClick=onAdd){Icon(Icons.Default.Add,"Add")}})}) { p -> Column(Modifier.padding(p).padding(16.dp).fillMaxSize(), content=content) } }
-@Composable private fun Metric(label:String, value:String, modifier:Modifier=Modifier) { Card(modifier) { Column(Modifier.padding(16.dp)) { Text(label, style=MaterialTheme.typography.labelMedium); Text(value, style=MaterialTheme.typography.headlineSmall, fontWeight=FontWeight.Bold) } } }
-@Composable private fun Empty(title:String, detail:String) { Column(Modifier.fillMaxSize(), verticalArrangement=Arrangement.Center, horizontalAlignment=Alignment.CenterHorizontally) { Icon(Icons.Default.Construction,"",Modifier.size(52.dp)); Spacer(Modifier.height(12.dp)); Text(title, style=MaterialTheme.typography.titleLarge); Text(detail, style=MaterialTheme.typography.bodyMedium) } }
-@Composable private fun Field(label:String, value:String, change:(String)->Unit) { OutlinedTextField(value=value,onValueChange=change,label={Text(label)},modifier=Modifier.fillMaxWidth(),singleLine=true) }
-@Composable private fun SaveButton(save:()->Unit) { Button(onClick=save,modifier=Modifier.fillMaxWidth()){Text("Save")}}
-@Composable private fun ProjectPicker(projects: List<ProjectEntity>, selectedProjectId: String?, onSelect: (String?) -> Unit, allowCentral: Boolean = false) {
-    var expanded by remember { mutableStateOf(false) }
-    val selectedName = projects.firstOrNull { it.id == selectedProjectId }?.name
-    Box {
-        OutlinedButton(onClick = { expanded = true }, enabled = projects.isNotEmpty() || allowCentral) {
-            Text(selectedName ?: if (allowCentral) "Central stock" else "Select project")
-        }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            if (allowCentral) DropdownMenuItem(text = { Text("Central stock") }, onClick = { onSelect(null); expanded = false })
-            projects.forEach { project ->
-                DropdownMenuItem(text = { Text(project.name) }, onClick = { onSelect(project.id); expanded = false })
-            }
-        }
+@Composable
+private fun Page(title: String, onAdd: (() -> Unit)? = null, onBack: (() -> Unit)? = null, content: @Composable ColumnScope.() -> Unit) {
+    Scaffold(topBar = {
+        TopAppBar(title = { Text(title) }, navigationIcon = { if (onBack != null) IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } }, actions = {
+            if (onAdd != null) IconButton(onClick = onAdd) { Icon(Icons.Default.Add, "Add") }
+        })
+    }) { padding -> Column(Modifier.padding(padding).padding(horizontal = 16.dp, vertical = 8.dp).fillMaxSize(), content = content) }
+}
+
+@Composable
+private fun Empty(title: String, detail: String) {
+    Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(title, style = MaterialTheme.typography.titleLarge)
+        Text(detail, style = MaterialTheme.typography.bodyMedium)
     }
 }
 
-@Composable private fun ProjectForm(repo:LedgerRepository, close:()->Unit) { var ref by remember{mutableStateOf("")};var name by remember{mutableStateOf("")};var client by remember{mutableStateOf("")};var address by remember{mutableStateOf("")};var contract by remember{mutableStateOf("")};var budget by remember{mutableStateOf("")}; val scope=rememberCoroutineScope(); var error by remember{mutableStateOf<String?>(null)}; FormDialog("New project",close) { Field("Reference",ref){ref=it};Field("Project name",name){name=it};Field("Client",client){client=it};Field("Site address",address){address=it};Field("Contract amount (Rs)",contract){contract=it};Field("Approved budget (Rs)",budget){budget=it};error?.let{Text(it,color=MaterialTheme.colorScheme.error)};SaveButton { scope.launch { runCatching{repo.addProject(ref,name,client,address,parseMoney(contract),parseMoney(budget))}.onSuccess{close()}.onFailure{error=it.message} } } } }
-@Composable private fun WorkerForm(repo:LedgerRepository,projectId:String?,close:()->Unit) { var name by remember{mutableStateOf("")};var trade by remember{mutableStateOf("")};var wage by remember{mutableStateOf("")};var phone by remember{mutableStateOf("")};val scope=rememberCoroutineScope();var error by remember{mutableStateOf<String?>(null)};FormDialog("New worker",close){if(projectId==null)Text("Select a project first.") else {Text("Assigned to the selected site");Field("Full name",name){name=it};Field("Trade",trade){trade=it};Field("Daily wage (Rs)",wage){wage=it};Field("Phone (optional)",phone){phone=it};error?.let{Text(it,color=MaterialTheme.colorScheme.error)};SaveButton{scope.launch{runCatching{repo.addWorker(name,trade,parseMoney(wage),phone,projectId)}.onSuccess{close()}.onFailure{error=it.message}}}}} }
-@Composable private fun AttendanceForm(repo: LedgerRepository, worker: WorkerEntity, projectId: String, close: () -> Unit) {
-    var status by remember { mutableStateOf(AttendanceStatus.PRESENT) }
-    var error by remember { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
-    FormDialog("Attendance: ${worker.fullName}", close) {
-        Row { AttendanceStatus.entries.forEach { value ->
-            FilterChip(selected = status == value, onClick = { status = value }, label = { Text(value.name.replace('_', ' ')) })
-        } }
-        error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        SaveButton {
-            scope.launch {
-                runCatching { repo.markAttendance(worker.id, projectId, status, 0) }
-                    .onSuccess { close() }
-                    .onFailure { error = it.message }
-            }
-        }
+@Composable
+private fun SummaryLine(label: String, amount: String, color: Color = MaterialTheme.colorScheme.onSurface) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(label)
+        Text(amount, color = color, fontWeight = FontWeight.SemiBold)
     }
 }
-@Composable private fun AssignWorkerForm(repo: LedgerRepository, worker: WorkerEntity, projects: List<ProjectEntity>, currentProjectId: String?, close: () -> Unit) {
-    var selectedProjectId by remember { mutableStateOf<String?>(null) }
-    var error by remember { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
-    val choices = projects.filter { it.id != currentProjectId }
-    FormDialog("Assign ${worker.fullName}", close) {
-        if (choices.isEmpty()) Text("Create another project before moving this worker.") else {
-            ProjectPicker(choices, selectedProjectId, { selectedProjectId = it })
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            SaveButton {
-                val projectId = selectedProjectId
-                if (projectId == null) error = "Select a project." else scope.launch {
-                    runCatching { repo.assignWorker(worker.id, projectId) }
-                        .onSuccess { close() }
-                        .onFailure { error = it.message }
-                }
-            }
-        }
-    }
-}
-@Composable private fun MaterialForm(repo:LedgerRepository,close:()->Unit){var code by remember{mutableStateOf("")};var name by remember{mutableStateOf("")};var unit by remember{mutableStateOf("Bags")};var min by remember{mutableStateOf("0")};var rate by remember{mutableStateOf("0")};val scope=rememberCoroutineScope();var error by remember{mutableStateOf<String?>(null)};FormDialog("New material",close){Field("Code",code){code=it};Field("Material name",name){name=it};Field("Unit",unit){unit=it};Field("Minimum stock",min){min=it};Field("Default rate (Rs)",rate){rate=it};error?.let{Text(it,color=MaterialTheme.colorScheme.error)};SaveButton{scope.launch{runCatching{repo.addMaterial(code,name,unit,min.toDoubleOrNull()?:-1,parseMoney(rate))}.onSuccess{close()}.onFailure{error=it.message}}}}}
-@Composable private fun ReceiveForm(repo: LedgerRepository, material: MaterialEntity, projects: List<ProjectEntity>, close: () -> Unit) {
-    var qty by remember { mutableStateOf("") }
-    var rate by remember { mutableStateOf("") }
-    var error by remember { mutableStateOf<String?>(null) }
-    var selectedProjectId by remember { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
-    FormDialog("Receive ${material.name}", close) {
-        ProjectPicker(projects, selectedProjectId, { selectedProjectId = it }, allowCentral = true)
-        Field("Quantity (${material.unit})", qty) { qty = it }
-        Field("Rate (Rs)", rate) { rate = it }
-        error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        SaveButton {
-            scope.launch {
-                runCatching { repo.receiveMaterial(material.id, selectedProjectId, qty.toDoubleOrNull() ?: 0.0, parseMoney(rate)) }
-                    .onSuccess { close() }
-                    .onFailure { error = it.message }
-            }
-        }
-    }
-}
-@Composable private fun ExpenseForm(repo: LedgerRepository, projects: List<ProjectEntity>, close: () -> Unit) {
-    var category by remember { mutableStateOf("") }
-    var description by remember { mutableStateOf("") }
-    var amount by remember { mutableStateOf("") }
-    var selectedProjectId by remember { mutableStateOf<String?>(projects.firstOrNull()?.id) }
-    LaunchedEffect(projects) {
-        if (selectedProjectId == null && projects.isNotEmpty()) {
-            selectedProjectId = projects.first().id
-        }
-    }
-    var error by remember { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
-    FormDialog("New expense", close) {
-        if (projects.isEmpty()) Text("Create a project first.") else {
-            ProjectPicker(projects, selectedProjectId, { selectedProjectId = it })
-            Field("Category", category) { category = it }
-            Field("Description", description) { description = it }
-            Field("Amount (Rs)", amount) { amount = it }
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            SaveButton {
-                val projectId = selectedProjectId
-                if (projectId == null) error = "Select a project." else {
-                    scope.launch {
-                        runCatching { repo.addExpense(projectId, category, description, parseMoney(amount)) }
-                            .onSuccess { close() }
-                            .onFailure { error = it.message }
-                    }
-                }
-            }
-        }
-    }
-}
-@Composable private fun FormDialog(title:String,close:()->Unit,content:@Composable ColumnScope.()->Unit){AlertDialog(onDismissRequest=close,title={Text(title)},text={Column(verticalArrangement=Arrangement.spacedBy(8.dp),content=content)},confirmButton={})}
 
+@Composable
+private fun Field(label: String, value: String, change: (String) -> Unit) {
+    OutlinedTextField(value = value, onValueChange = change, label = { Text(label) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+}
+
+@Composable
+private fun SaveButton(save: () -> Unit) { Button(onClick = save, modifier = Modifier.fillMaxWidth()) { Text("Save") } }
+
+@Composable
+private fun DeleteConfirmationDialog(
+    title: String,
+    message: String,
+    error: String?,
+    enabled: Boolean,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(message)
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            }
+        },
+        confirmButton = { TextButton(onClick = onConfirm, enabled = enabled) { Text("Delete") } },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = enabled) { Text("Cancel") } }
+    )
+}
+
+@Composable
+private fun FormDialog(title: String, close: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    AlertDialog(onDismissRequest = close, title = { Text(title) }, text = {
+        Column(Modifier.heightIn(max = 560.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp), content = content)
+    }, confirmButton = {})
+}

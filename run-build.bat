@@ -1,5 +1,13 @@
 @echo off
-set "JAVA_HOME=C:\Program Files\Java\jdk-21.0.11"
-set PATH=%JAVA_HOME%\bin;%PATH%
-set "GRADLE_USER_HOME=E:\contruction_managment\.gradle-new"
-call E:\contruction_managment\.tooling\gradle-9.3.1\bin\gradle.bat --no-daemon -Dorg.gradle.jvmargs= --max-workers=1 --console=plain assembleDebug
+setlocal
+
+if not defined JAVA_HOME (
+    where java >nul 2>nul
+    if errorlevel 1 (
+        echo Install JDK 17 or newer and set JAVA_HOME or add java to PATH.
+        exit /b 1
+    )
+)
+
+call "%~dp0gradlew.bat" --no-daemon --max-workers=1 --console=plain :app:assembleDebug
+exit /b %ERRORLEVEL%
