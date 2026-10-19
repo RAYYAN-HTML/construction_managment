@@ -32,6 +32,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.ByteArrayOutputStream
+import android.graphics.Bitmap
 import java.util.UUID
 
 @Composable
@@ -41,7 +43,12 @@ fun PhotoAttachment(path: String?, onPathChange: (String?) -> Unit) {
     var cameraFile by remember { mutableStateOf<File?>(null) }
     val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { saved ->
         val file = cameraFile
-        if (saved && file?.exists() == true) onPathChange(file.absolutePath)
+        if (saved && file?.exists() == true) {
+            scope.launch {
+                val compressed = withContext(Dispatchers.IO) { compressPhoto(file) }
+                if (compressed) onPathChange(file.absolutePath)
+            }
+        }
         else file?.delete()
     }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
@@ -49,9 +56,10 @@ fun PhotoAttachment(path: String?, onPathChange: (String?) -> Unit) {
             val savedPath = withContext(Dispatchers.IO) {
                 runCatching {
                     val directory = File(context.filesDir, "ledger_photos").apply { mkdirs() }
-                    val target = File(directory, "${UUID.randomUUID()}.img")
+                    val target = File(directory, "${UUID.randomUUID()}.jpg")
                     context.contentResolver.openInputStream(uri)?.use { input -> target.outputStream().use { output -> input.copyTo(output) } }
                         ?: error("Could not read the selected photo.")
+                    compressPhoto(target)
                     target.absolutePath
                 }.getOrNull()
             }
@@ -83,6 +91,16 @@ fun PhotoAttachment(path: String?, onPathChange: (String?) -> Unit) {
         bitmap?.let { Image(it, contentDescription = "Attached proof", modifier = Modifier.fillMaxWidth().heightIn(max = 220.dp), contentScale = ContentScale.Fit) }
     }
 }
+
+private fun compressPhoto(file: File): Boolean = runCatching {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeFile(file.absolutePath, bounds)
+    val sample = maxOf(1, maxOf(bounds.outWidth / 1600, bounds.outHeight / 1600))
+    val bitmap = BitmapFactory.decodeFile(file.absolutePath, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return false
+    file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 82, it) }
+    bitmap.recycle()
+    true
+}.getOrDefault(false)
 
 private fun loadProofImage(path: String): ImageBitmap? = runCatching {
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }

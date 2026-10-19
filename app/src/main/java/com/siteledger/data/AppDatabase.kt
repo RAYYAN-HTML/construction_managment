@@ -31,6 +31,7 @@ interface LedgerDao {
     @Query("SELECT * FROM workers ORDER BY fullName") fun allWorkers(): Flow<List<WorkerEntity>>
     @Query("SELECT * FROM workers WHERE id = :workerId") fun worker(workerId: String): Flow<WorkerEntity?>
     @Query("SELECT * FROM workers WHERE active = 1 ORDER BY fullName") suspend fun activeWorkers(): List<WorkerEntity>
+    @Query("SELECT * FROM workers") suspend fun workersOnce(): List<WorkerEntity>
     @Query("SELECT * FROM workers WHERE id = :workerId") suspend fun workerOnce(workerId: String): WorkerEntity?
     @Query("SELECT * FROM attendance WHERE workDate = :date") fun attendanceForDate(date: String): Flow<List<AttendanceEntity>>
     @Query("SELECT * FROM attendance WHERE workDate = :date") suspend fun attendanceForDateOnce(date: String): List<AttendanceEntity>
@@ -42,9 +43,12 @@ interface LedgerDao {
     @Query("SELECT * FROM worker_ledger_entries WHERE id = :id") suspend fun workerEntryOnce(id: String): WorkerLedgerEntryEntity?
     @Query("DELETE FROM worker_ledger_entries WHERE id = :id") suspend fun deleteWorkerEntry(id: String)
     @Query("SELECT * FROM counterparties WHERE active = 1 ORDER BY name") fun counterparties(): Flow<List<CounterpartyEntity>>
+    @Query("SELECT * FROM counterparties ORDER BY name") fun allCounterparties(): Flow<List<CounterpartyEntity>>
     @Query("SELECT * FROM counterparties WHERE id = :id") fun counterparty(id: String): Flow<CounterpartyEntity?>
     @Query("SELECT * FROM counterparties WHERE id = :id") suspend fun counterpartyOnce(id: String): CounterpartyEntity?
+    @Query("SELECT * FROM counterparties") suspend fun counterpartiesOnce(): List<CounterpartyEntity>
     @Query("UPDATE counterparties SET name = :name, type = :type, phone = :phone WHERE id = :id") suspend fun updateCounterparty(id: String, name: String, type: CounterpartyType, phone: String?)
+    @Query("UPDATE counterparties SET active = :active WHERE id = :id") suspend fun setCounterpartyActive(id: String, active: Boolean)
     @Query("SELECT c.id, c.name, c.type, COALESCE(SUM(CASE WHEN e.direction = 'THEY_OWE_US' THEN e.amountMinor ELSE -e.amountMinor END), 0) AS balanceMinor FROM counterparties c LEFT JOIN counterparty_ledger_entries e ON e.counterpartyId = c.id WHERE c.active = 1 GROUP BY c.id ORDER BY c.name") fun counterpartyBalances(): Flow<List<CounterpartyBalance>>
     @Query("SELECT * FROM counterparty_ledger_entries WHERE counterpartyId = :id ORDER BY entryDate DESC, createdAt DESC") fun counterpartyEntries(id: String): Flow<List<CounterpartyLedgerEntryEntity>>
     @Query("SELECT * FROM counterparty_ledger_entries WHERE id = :id") suspend fun counterpartyEntryOnce(id: String): CounterpartyLedgerEntryEntity?

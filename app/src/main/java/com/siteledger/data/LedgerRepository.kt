@@ -11,6 +11,7 @@ class LedgerRepository(private val dao: LedgerDao) {
     val allWorkers = dao.allWorkers()
     val labourTotals = dao.labourTotals()
     val counterparties = dao.counterparties()
+    val allCounterparties = dao.allCounterparties()
     val counterpartyBalances = dao.counterpartyBalances()
 
     fun worker(id: String) = dao.worker(id)
@@ -24,6 +25,7 @@ class LedgerRepository(private val dao: LedgerDao) {
         require(name.isNotBlank()) { "Worker name is required." }
         require(dailyWageMinor > 0) { "Daily wage must be greater than zero." }
         require(halfDayWageMinor >= 0) { "Half-day wage cannot be negative." }
+        require(dao.workersOnce().none { it.active && it.fullName.trim().equals(name.trim(), true) }) { "An active worker with this name already exists." }
         dao.insertWorker(WorkerEntity(fullName = name.trim(), dailyWageMinor = dailyWageMinor, halfDayWageMinor = halfDayWageMinor, phone = phone?.trim()?.ifBlank { null }, trade = trade.trim()))
     }
 
@@ -31,6 +33,7 @@ class LedgerRepository(private val dao: LedgerDao) {
         require(name.isNotBlank()) { "Worker name is required." }
         require(dailyWageMinor > 0) { "Daily wage must be greater than zero." }
         require(halfDayWageMinor >= 0) { "Half-day wage cannot be negative." }
+        require(dao.workersOnce().none { it.id != workerId && it.active && it.fullName.trim().equals(name.trim(), true) }) { "An active worker with this name already exists." }
         dao.updateWorker(workerId, name.trim(), phone?.trim()?.ifBlank { null }, trade.trim(), dailyWageMinor, halfDayWageMinor)
     }
 
@@ -77,12 +80,17 @@ class LedgerRepository(private val dao: LedgerDao) {
 
     suspend fun addCounterparty(name: String, type: CounterpartyType, phone: String?) {
         require(name.isNotBlank()) { "Name is required." }
+        require(dao.counterpartiesOnce().none { it.active && it.name.trim().equals(name.trim(), true) }) { "An active account with this name already exists." }
         dao.insertCounterparty(CounterpartyEntity(name = name.trim(), type = type, phone = phone?.trim()?.ifBlank { null }))
     }
+
+    suspend fun setWorkerActive(id: String, active: Boolean) = dao.setWorkerActive(id, active)
+    suspend fun setCounterpartyActive(id: String, active: Boolean) = dao.setCounterpartyActive(id, active)
 
     suspend fun updateCounterparty(id: String, name: String, type: CounterpartyType, phone: String?) {
         require(name.isNotBlank()) { "Name is required." }
         require(dao.counterpartyOnce(id) != null) { "Account no longer exists." }
+        require(dao.counterpartiesOnce().none { it.id != id && it.active && it.name.trim().equals(name.trim(), true) }) { "An active account with this name already exists." }
         dao.updateCounterparty(id, name.trim(), type, phone?.trim()?.ifBlank { null })
     }
 

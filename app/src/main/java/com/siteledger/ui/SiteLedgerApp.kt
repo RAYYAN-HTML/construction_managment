@@ -14,6 +14,7 @@ import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.*
+import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -45,10 +46,10 @@ private fun money(value: Long): String {
 private fun moneyInput(value: Long) = BigDecimal.valueOf(value, 2).stripTrailingZeros().toPlainString()
 private val gainColor = Color(0xFF16803C)
 private fun parseMoney(text: String): Long? = runCatching {
-    BigDecimal(text.trim()).setScale(2, RoundingMode.HALF_UP).movePointRight(2).longValueExact().takeIf { it > 0 }
+    BigDecimal(text.trim().replace(',', '.')).setScale(2, RoundingMode.HALF_UP).movePointRight(2).longValueExact().takeIf { it > 0 }
 }.getOrNull()
 private fun parseNonNegativeMoney(text: String): Long? = runCatching {
-    BigDecimal(text.trim()).setScale(2, RoundingMode.HALF_UP).movePointRight(2).longValueExact().takeIf { it >= 0 }
+    BigDecimal(text.trim().replace(',', '.')).setScale(2, RoundingMode.HALF_UP).movePointRight(2).longValueExact().takeIf { it >= 0 }
 }.getOrNull()
 
 @Composable
@@ -73,11 +74,10 @@ fun SiteLedgerApp(repository: LedgerRepository) {
 @Composable
 private fun LabourScreen(repo: LedgerRepository) {
     var selectedWorkerId by rememberSaveable { mutableStateOf<String?>(null) }
-    if (selectedWorkerId != null) {
-        WorkerProfile(repo, selectedWorkerId!!, onBack = { selectedWorkerId = null })
-        return
-    }
-    val workers by repo.workers.collectAsStateWithLifecycle(emptyList())
+    var showArchived by rememberSaveable { mutableStateOf(false) }
+    val activeWorkers by repo.workers.collectAsStateWithLifecycle(emptyList())
+    val allWorkers by repo.allWorkers.collectAsStateWithLifecycle(emptyList())
+    val workers = if (showArchived) allWorkers else activeWorkers
     val labourTotals by repo.labourTotals.collectAsStateWithLifecycle(LabourTotals(0L, 0L))
     var dateText by rememberSaveable { mutableStateOf(LocalDate.now().toString()) }
     val attendance by repo.attendanceForDate(dateText).collectAsStateWithLifecycle(emptyList())
@@ -89,7 +89,10 @@ private fun LabourScreen(repo: LedgerRepository) {
     var statuses by remember(dateText, workerIds, attendance) {
         mutableStateOf(attendance.associate { it.workerId to it.status })
     }
+    BackHandler(selectedWorkerId != null) { selectedWorkerId = null }
+    if (selectedWorkerId != null) WorkerProfile(repo, selectedWorkerId!!, onBack = { selectedWorkerId = null }) else {
     Page("Labour", onAdd = { addWorker = true }) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) { TextButton(onClick = { showArchived = !showArchived }) { Text(if (showArchived) "Show active" else "Show archived") } }
         val labourBalance = labourTotals.totalEarnedMinor - labourTotals.totalPaidMinor
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -114,9 +117,16 @@ private fun LabourScreen(repo: LedgerRepository) {
             }
         } else {
             Text("Choose one status for every worker. Wages are calculated automatically.", style = MaterialTheme.typography.bodySmall)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = { statuses = workerIds.associateWith { AttendanceStatus.PRESENT } }) { Text("Mark everyone present") }
+            }
+            if (attendance.isEmpty()) Text("No attendance recorded for this date yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(vertical = 8.dp)) {
-                items(workers, key = { it.id }) { worker ->
-                    AttendanceRow(worker, statuses[worker.id], onStatus = { statuses = statuses + (worker.id to it) }, onAccount = { selectedWorkerId = worker.id })
+                items(workers.filter { showArchived || it.active }, key = { it.id }) { worker ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.weight(1f)) { AttendanceRow(worker, statuses[worker.id], onStatus = { statuses = statuses + (worker.id to it) }, onAccount = { selectedWorkerId = worker.id }) }
+                        TextButton(onClick = { scope.launch { repo.setWorkerActive(worker.id, !worker.active) } }) { Text(if (worker.active) "Archive" else "Restore") }
+                    }
                     HorizontalDivider()
                 }
             }
@@ -130,6 +140,7 @@ private fun LabourScreen(repo: LedgerRepository) {
     }
     if (addWorker) WorkerForm(repo, null, onClose = { addWorker = false })
     if (pickDate) AttendanceDatePicker(dateText, onSelect = { dateText = it; error = null }, onClose = { pickDate = false })
+    }
 }
 
 @Composable
@@ -170,6 +181,7 @@ private fun AttendanceDatePicker(value: String, onSelect: (String) -> Unit, onCl
 
 @Composable
 private fun WorkerProfile(repo: LedgerRepository, workerId: String, onBack: () -> Unit) {
+    BackHandler { onBack() }
     val worker by repo.worker(workerId).collectAsStateWithLifecycle(null)
     val attendance by repo.workerAttendance(workerId).collectAsStateWithLifecycle(emptyList())
     val entries by repo.workerEntries(workerId).collectAsStateWithLifecycle(emptyList())
@@ -280,6 +292,7 @@ private fun WorkerEntryForm(repo: LedgerRepository, workerId: String, type: Work
     var note by remember { mutableStateOf("") }
     var photo by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    var isSaving by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     FormDialog(if (type == WorkerEntryType.ADVANCE) "Record advance" else "Record wage payment", onClose) {
         Field("Amount (Rs)", amount) { amount = it }
@@ -287,11 +300,13 @@ private fun WorkerEntryForm(repo: LedgerRepository, workerId: String, type: Work
         Field("Note (optional)", note) { note = it }
         PhotoAttachment(photo) { photo = it }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        SaveButton {
+        SaveButton(isSaving) {
             val parsed = parseMoney(amount)
-            if (parsed == null) error = "Enter an amount greater than zero." else scope.launch {
+            if (parsed == null) error = "Enter an amount greater than zero." else if (!isSaving) scope.launch {
+                isSaving = true
                 runCatching { repo.addWorkerEntry(workerId, type, parsed, date, note, photo) }
                     .onSuccess { onClose() }.onFailure { error = it.message }
+                isSaving = false
             }
         }
     }
@@ -301,13 +316,15 @@ private fun WorkerEntryForm(repo: LedgerRepository, workerId: String, type: Work
 @Composable
 private fun AccountsScreen(repo: LedgerRepository) {
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
-    if (selectedId != null) {
-        CounterpartyProfile(repo, selectedId!!, onBack = { selectedId = null })
-        return
-    }
-    val accounts by repo.counterpartyBalances.collectAsStateWithLifecycle(emptyList())
+    BackHandler(selectedId != null) { selectedId = null }
+    var showArchived by rememberSaveable { mutableStateOf(false) }
+    val allAccounts by repo.allCounterparties.collectAsStateWithLifecycle(emptyList())
+    val activeBalances by repo.counterpartyBalances.collectAsStateWithLifecycle(emptyList())
+    val accounts = if (showArchived) allAccounts.map { entity -> CounterpartyBalance(entity.id, entity.name, entity.type, activeBalances.firstOrNull { it.id == entity.id }?.balanceMinor ?: 0L) } else activeBalances
+    val scope = rememberCoroutineScope()
     var add by remember { mutableStateOf(false) }
-    Page("Accounts", onAdd = { add = true }) {
+    if (selectedId != null) CounterpartyProfile(repo, selectedId!!, onBack = { selectedId = null }) else Page("Accounts", onAdd = { add = true }) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) { TextButton(onClick = { showArchived = !showArchived }) { Text(if (showArchived) "Show active" else "Show archived") } }
         if (accounts.isEmpty()) Empty("No accounts yet", "Add a site owner or supplier to start a ledger.") else LazyColumn {
             items(accounts, key = { it.id }) { account ->
                 ListItem(
@@ -315,14 +332,13 @@ private fun AccountsScreen(repo: LedgerRepository) {
                     headlineContent = { Text(account.name) },
                     supportingContent = { Text(if (account.type == CounterpartyType.SITE_OWNER) "Site owner" else "Supplier") },
                     trailingContent = {
-                        val balance = account.balanceMinor
-                    Text(
-                        if (balance > 0) "They owe ${money(balance)}" else if (balance < 0) "We owe ${money(-balance)}" else "Settled",
-                        color = when { balance > 0 -> gainColor; balance < 0 -> MaterialTheme.colorScheme.error; else -> MaterialTheme.colorScheme.onSurface },
-                        fontWeight = FontWeight.SemiBold
-                    )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            val balance = account.balanceMinor
+                            Text(if (balance > 0) "They owe ${money(balance)}" else if (balance < 0) "We owe ${money(-balance)}" else "Settled", color = when { balance > 0 -> gainColor; balance < 0 -> MaterialTheme.colorScheme.error; else -> MaterialTheme.colorScheme.onSurface }, fontWeight = FontWeight.SemiBold)
+                        }
                     }
                 )
+                TextButton(onClick = { scope.launch { repo.setCounterpartyActive(account.id, !allAccounts.first { it.id == account.id }.active) } }) { Text(if (allAccounts.first { it.id == account.id }.active) "Archive" else "Restore") }
                 HorizontalDivider()
             }
         }
@@ -332,6 +348,7 @@ private fun AccountsScreen(repo: LedgerRepository) {
 
 @Composable
 private fun CounterpartyProfile(repo: LedgerRepository, id: String, onBack: () -> Unit) {
+    BackHandler { onBack() }
     val account by repo.counterparty(id).collectAsStateWithLifecycle(null)
     val entries by repo.counterpartyEntries(id).collectAsStateWithLifecycle(emptyList())
     var addEntry by remember { mutableStateOf(false) }
@@ -403,6 +420,7 @@ private fun CounterpartyForm(repo: LedgerRepository, account: CounterpartyEntity
     var phone by remember(account?.id) { mutableStateOf(account?.phone.orEmpty()) }
     var type by remember(account?.id) { mutableStateOf(account?.type ?: CounterpartyType.SITE_OWNER) }
     var error by remember { mutableStateOf<String?>(null) }
+    var isSaving by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     FormDialog(if (account == null) "New account" else "Edit account", onClose) {
         Field("Name", name) { name = it }
@@ -413,12 +431,14 @@ private fun CounterpartyForm(repo: LedgerRepository, account: CounterpartyEntity
             FilterChip(type == CounterpartyType.SUPPLIER, { type = CounterpartyType.SUPPLIER }, label = { Text("Supplier") })
         }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        SaveButton {
-            scope.launch {
+        SaveButton(isSaving) {
+            if (!isSaving) scope.launch {
+                isSaving = true
                 runCatching {
                     if (account == null) repo.addCounterparty(name, type, phone)
                     else repo.updateCounterparty(account.id, name, type, phone)
                 }.onSuccess { onClose() }.onFailure { error = it.message }
+                isSaving = false
             }
         }
     }
@@ -433,6 +453,7 @@ private fun CounterpartyEntryForm(repo: LedgerRepository, id: String, onClose: (
     var direction by remember { mutableStateOf(AccountDirection.THEY_OWE_US) }
     var photo by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    var isSaving by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     FormDialog("New ledger entry", onClose) {
         Row {
@@ -446,11 +467,13 @@ private fun CounterpartyEntryForm(repo: LedgerRepository, id: String, onClose: (
         Field("Note (optional)", note) { note = it }
         PhotoAttachment(photo) { photo = it }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        SaveButton {
+        SaveButton(isSaving) {
             val parsed = parseMoney(amount)
-            if (parsed == null) error = "Enter an amount greater than zero." else scope.launch {
+            if (parsed == null) error = "Enter an amount greater than zero." else if (!isSaving) scope.launch {
+                isSaving = true
                 runCatching { repo.addCounterpartyEntry(id, direction, parsed, date, note, photo) }
                     .onSuccess { onClose() }.onFailure { error = it.message }
+                isSaving = false
             }
         }
     }
@@ -463,6 +486,8 @@ private fun WorkerForm(repo: LedgerRepository, worker: WorkerEntity?, onClose: (
     var wage by remember(worker?.id) { mutableStateOf(worker?.dailyWageMinor?.let(::moneyInput).orEmpty()) }
     var halfDayWage by remember(worker?.id) { mutableStateOf(worker?.halfDayWageMinor?.let(::moneyInput).orEmpty()) }
     var phone by remember(worker?.id) { mutableStateOf(worker?.phone.orEmpty()) }
+    var trade by remember(worker?.id) { mutableStateOf(worker?.trade.orEmpty()) }
+    var isSaving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     FormDialog(if (worker == null) "New worker" else "Edit worker", onClose) {
@@ -470,16 +495,19 @@ private fun WorkerForm(repo: LedgerRepository, worker: WorkerEntity?, onClose: (
         Field("Full-day wage (Rs)", wage) { wage = it }
         Field("Half-day wage (Rs)", halfDayWage) { halfDayWage = it }
         Field("Phone (optional)", phone) { phone = it }
+        Field("Trade (optional)", trade) { trade = it }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        SaveButton {
+        SaveButton(isSaving) {
             val parsed = parseMoney(wage)
             val parsedHalfDay = if (halfDayWage.isBlank()) parsed?.div(2) else parseNonNegativeMoney(halfDayWage)
             if (parsed == null) error = "Enter a full-day wage greater than zero."
             else if (parsedHalfDay == null) error = "Enter a valid half-day wage (zero is allowed)."
-            else scope.launch {
+            else if (!isSaving) scope.launch {
+                isSaving = true
                 runCatching {
-                    if (worker == null) repo.addWorker(name, parsed, parsedHalfDay, phone) else repo.updateWorker(worker.id, name, parsed, parsedHalfDay, phone, worker.trade)
+                    if (worker == null) repo.addWorker(name, parsed, parsedHalfDay, phone, trade) else repo.updateWorker(worker.id, name, parsed, parsedHalfDay, phone, trade)
                 }.onSuccess { onClose() }.onFailure { error = it.message }
+                isSaving = false
             }
         }
     }
@@ -535,7 +563,7 @@ private fun Field(label: String, value: String, change: (String) -> Unit) {
 }
 
 @Composable
-private fun SaveButton(save: () -> Unit) { Button(onClick = save, modifier = Modifier.fillMaxWidth()) { Text("Save") } }
+private fun SaveButton(loading: Boolean = false, save: () -> Unit) { Button(onClick = save, enabled = !loading, modifier = Modifier.fillMaxWidth()) { if (loading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp) else Text("Save") } }
 
 @Composable
 private fun DeleteConfirmationDialog(

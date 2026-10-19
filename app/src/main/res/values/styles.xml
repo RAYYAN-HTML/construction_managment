@@ -1,4 +1,3 @@
 <resources>
     <style name="Theme.SiteLedger" parent="android:style/Theme.Material.Light.NoActionBar" />
 </resources>
-
