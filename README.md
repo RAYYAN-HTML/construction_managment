@@ -48,6 +48,4 @@ The Room database stores money in integer minor units (paisa). Photos and databa
 
 The current database schema is version 4. Upgrading a version 3 database preserves ledger data and adds configurable half-day rates. Upgrading the older version 1 or 2 project/material prototype clears its local records when creating the ledger schema; those old records are not migrated.
 
-## License
 
-No license has been selected yet. GitHub does not automatically grant permission to reuse or redistribute this code; add a `LICENSE` file before inviting public contributions or redistribution.
