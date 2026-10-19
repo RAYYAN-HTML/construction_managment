@@ -85,3 +85,19 @@ data class CounterpartyLedgerEntryEntity(
 data class CounterpartyBalance(val id: String, val name: String, val type: CounterpartyType, val balanceMinor: Long)
 
 data class LabourTotals(val totalEarnedMinor: Long, val totalPaidMinor: Long)
+
+data class WorkerBalance(
+    val id: String,
+    val name: String,
+    val active: Boolean,
+    val totalEarnedMinor: Long,
+    val totalPaidMinor: Long,
+    val balanceMinor: Long
+)
+
+data class AttendanceSaveSummary(
+    val date: String,
+    val workerCount: Int,
+    val newRecordCount: Int,
+    val changedRecordCount: Int
+)

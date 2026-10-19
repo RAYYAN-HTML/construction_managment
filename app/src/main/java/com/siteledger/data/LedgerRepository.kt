@@ -10,12 +10,14 @@ class LedgerRepository(private val dao: LedgerDao) {
     val workers = dao.workers()
     val allWorkers = dao.allWorkers()
     val labourTotals = dao.labourTotals()
+    val workerBalances = dao.workerBalances()
     val counterparties = dao.counterparties()
     val allCounterparties = dao.allCounterparties()
     val counterpartyBalances = dao.counterpartyBalances()
 
     fun worker(id: String) = dao.worker(id)
     fun attendanceForDate(date: String): Flow<List<AttendanceEntity>> = dao.attendanceForDate(date)
+    fun attendanceForRange(startDate: String, endDate: String) = dao.attendanceForRange(startDate, endDate)
     fun workerAttendance(workerId: String) = dao.workerAttendance(workerId)
     fun workerEntries(workerId: String) = dao.workerEntries(workerId)
     fun counterparty(id: String) = dao.counterparty(id)
@@ -37,11 +39,11 @@ class LedgerRepository(private val dao: LedgerDao) {
         dao.updateWorker(workerId, name.trim(), phone?.trim()?.ifBlank { null }, trade.trim(), dailyWageMinor, halfDayWageMinor)
     }
 
-    suspend fun saveAttendanceSheet(date: String, statuses: Map<String, AttendanceStatus>) {
+    suspend fun saveAttendanceSheet(date: String, statuses: Map<String, AttendanceStatus>): AttendanceSaveSummary {
         val workDate = LocalDate.parse(date).toString()
         val workers = dao.activeWorkers()
         require(workers.isNotEmpty()) { "Add a worker before recording attendance." }
-        require(statuses.keys == workers.map { it.id }.toSet()) { "Choose attendance for every worker." }
+        require(statuses.keys == workers.map { it.id }.toSet()) { "The active worker list changed. Review attendance for everyone and try again." }
         val existing = dao.attendanceForDateOnce(workDate).associateBy { it.workerId }
         val records = workers.map { worker ->
             val old = existing[worker.id]
@@ -59,10 +61,40 @@ class LedgerRepository(private val dao: LedgerDao) {
             )
         }
         dao.saveAttendance(records)
+        return AttendanceSaveSummary(
+            date = workDate,
+            workerCount = workers.size,
+            newRecordCount = workers.count { existing[it.id] == null },
+            changedRecordCount = workers.count { worker -> existing[worker.id]?.status?.let { it != statuses[worker.id] } == true }
+        )
     }
 
     suspend fun deleteAttendance(attendanceId: String) {
         dao.deleteAttendance(attendanceId)
+    }
+
+    suspend fun saveAttendanceStatus(workerId: String, date: String, status: AttendanceStatus) {
+        val workDate = LocalDate.parse(date).toString()
+        val worker = dao.workerOnce(workerId) ?: error("Worker no longer exists.")
+        require(worker.active) { "This worker is archived and cannot be marked from the attendance sheet." }
+        val old = dao.attendanceForDateOnce(workDate).firstOrNull { it.workerId == workerId }
+        val dailyRate = old?.dailyRateMinor ?: worker.dailyWageMinor
+        val halfDayRate = old?.halfDayRateMinor ?: worker.halfDayWageMinor
+        dao.saveAttendance(listOf(AttendanceEntity(
+            id = old?.id ?: UUID.randomUUID().toString(),
+            workerId = workerId,
+            workDate = workDate,
+            status = status,
+            dailyRateMinor = dailyRate,
+            halfDayRateMinor = halfDayRate,
+            earnedMinor = WageCalculator.earnedMinor(status, dailyRate, halfDayRate)
+        )))
+    }
+
+    suspend fun updateAttendanceStatus(attendanceId: String, status: AttendanceStatus) {
+        val record = dao.attendanceOnce(attendanceId) ?: error("Attendance record no longer exists.")
+        val earned = WageCalculator.earnedMinor(status, record.dailyRateMinor, record.halfDayRateMinor)
+        dao.updateAttendance(attendanceId, status, earned)
     }
 
     suspend fun addWorkerEntry(workerId: String, type: WorkerEntryType, amountMinor: Long, date: String, note: String, photoPath: String?) {

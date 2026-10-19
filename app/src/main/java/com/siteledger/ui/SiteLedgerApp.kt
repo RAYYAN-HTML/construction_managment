@@ -1,10 +1,17 @@
 package com.siteledger.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -13,6 +20,7 @@ import androidx.compose.material.icons.filled.AccountBalance
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.*
 import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.*
@@ -23,6 +31,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.siteledger.data.*
 import com.siteledger.domain.LedgerBalances
@@ -32,10 +41,15 @@ import java.math.RoundingMode
 import java.text.NumberFormat
 import java.time.Instant
 import java.time.LocalDate
+import java.time.YearMonth
+import java.time.format.DateTimeFormatter
 import java.time.ZoneOffset
 import java.util.Locale
 
 private enum class Destination(val title: String) { LABOUR("Labour"), ACCOUNTS("Accounts") }
+private enum class WorkerBalanceFilter { ALL, DUE, PAID, PAID_AHEAD }
+private val pendingColor = Color(0xFFF59E0B)
+private val paidColor = Color(0xFF22C55E)
 private fun money(value: Long): String {
     val formatter = NumberFormat.getNumberInstance(Locale.US).apply {
         minimumFractionDigits = if (value % 100L == 0L) 0 else 2
@@ -44,7 +58,9 @@ private fun money(value: Long): String {
     return "Rs. ${formatter.format(BigDecimal.valueOf(value, 2))}"
 }
 private fun moneyInput(value: Long) = BigDecimal.valueOf(value, 2).stripTrailingZeros().toPlainString()
-private val gainColor = Color(0xFF16803C)
+private fun displayDate(value: String) = runCatching {
+    LocalDate.parse(value).format(DateTimeFormatter.ofPattern("d MMM yyyy", Locale.getDefault()))
+}.getOrDefault(value)
 private fun parseMoney(text: String): Long? = runCatching {
     BigDecimal(text.trim().replace(',', '.')).setScale(2, RoundingMode.HALF_UP).movePointRight(2).longValueExact().takeIf { it > 0 }
 }.getOrNull()
@@ -55,10 +71,22 @@ private fun parseNonNegativeMoney(text: String): Long? = runCatching {
 @Composable
 fun SiteLedgerApp(repository: LedgerRepository) {
     var destination by rememberSaveable { mutableStateOf(Destination.LABOUR) }
-    Scaffold(bottomBar = {
-        NavigationBar {
+    Scaffold(containerColor = MaterialTheme.colorScheme.background, bottomBar = {
+        NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
             listOf(Destination.LABOUR to Icons.Default.People, Destination.ACCOUNTS to Icons.Default.AccountBalance).forEach { (item, icon) ->
-                NavigationBarItem(selected = destination == item, onClick = { destination = item }, icon = { Icon(icon, item.title) }, label = { Text(item.title) })
+                NavigationBarItem(
+                    selected = destination == item,
+                    onClick = { destination = item },
+                    icon = { Icon(icon, item.title) },
+                    label = { Text(item.title) },
+                    colors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = MaterialTheme.colorScheme.onPrimary,
+                        selectedTextColor = MaterialTheme.colorScheme.primary,
+                        indicatorColor = MaterialTheme.colorScheme.primary,
+                        unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                )
             }
         }
     }) { padding ->
@@ -74,90 +102,95 @@ fun SiteLedgerApp(repository: LedgerRepository) {
 @Composable
 private fun LabourScreen(repo: LedgerRepository) {
     var selectedWorkerId by rememberSaveable { mutableStateOf<String?>(null) }
+    var showBalances by rememberSaveable { mutableStateOf(false) }
+    var showAttendanceSheet by rememberSaveable { mutableStateOf(false) }
+    var balanceFilter by rememberSaveable { mutableStateOf(WorkerBalanceFilter.ALL) }
     var showArchived by rememberSaveable { mutableStateOf(false) }
     val activeWorkers by repo.workers.collectAsStateWithLifecycle(emptyList())
     val allWorkers by repo.allWorkers.collectAsStateWithLifecycle(emptyList())
-    val workers = if (showArchived) allWorkers else activeWorkers
+    val workers = if (showArchived) allWorkers.filterNot { it.active } else activeWorkers
     val labourTotals by repo.labourTotals.collectAsStateWithLifecycle(LabourTotals(0L, 0L))
-    var dateText by rememberSaveable { mutableStateOf(LocalDate.now().toString()) }
-    val attendance by repo.attendanceForDate(dateText).collectAsStateWithLifecycle(emptyList())
+    val workerBalances by repo.workerBalances.collectAsStateWithLifecycle(emptyList())
     var addWorker by remember { mutableStateOf(false) }
-    var pickDate by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
-    val workerIds = workers.map { it.id }
-    var statuses by remember(dateText, workerIds, attendance) {
-        mutableStateOf(attendance.associate { it.workerId to it.status })
+    BackHandler(selectedWorkerId != null || showBalances || showAttendanceSheet) {
+        when {
+            selectedWorkerId != null -> selectedWorkerId = null
+            showBalances -> showBalances = false
+            else -> showAttendanceSheet = false
+        }
     }
-    BackHandler(selectedWorkerId != null) { selectedWorkerId = null }
-    if (selectedWorkerId != null) WorkerProfile(repo, selectedWorkerId!!, onBack = { selectedWorkerId = null }) else {
+    if (selectedWorkerId != null) WorkerProfile(repo, selectedWorkerId!!, onBack = { selectedWorkerId = null }) else if (showBalances) {
+        WorkerBalancesScreen(repo, initialFilter = balanceFilter, onBack = { showBalances = false }, onSelectWorker = { selectedWorkerId = it })
+    } else if (showAttendanceSheet) {
+        AttendanceSheetScreen(repo, onBack = { showAttendanceSheet = false })
+    } else {
     Page("Labour", onAdd = { addWorker = true }) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) { TextButton(onClick = { showArchived = !showArchived }) { Text(if (showArchived) "Show active" else "Show archived") } }
-        val labourBalance = labourTotals.totalEarnedMinor - labourTotals.totalPaidMinor
-        Card(Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Labour totals", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                SummaryLine("Total earned", money(labourTotals.totalEarnedMinor))
-                SummaryLine("Total paid", money(labourTotals.totalPaidMinor), MaterialTheme.colorScheme.error)
-                if (labourBalance >= 0) {
-                    SummaryLine("Pending wages", money(labourBalance), if (labourBalance == 0L) gainColor else MaterialTheme.colorScheme.error)
-                } else {
-                    SummaryLine("Advance paid ahead", money(-labourBalance), gainColor)
-                }
-            }
+        val wagesDue = workerBalances.filter { it.balanceMinor > 0 }.sumOf { it.balanceMinor }
+        OutlinedButton(onClick = { showAttendanceSheet = true }, modifier = Modifier.fillMaxWidth()) { Text("Attendance sheet") }
+        Spacer(Modifier.height(12.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            LedgerSummaryCard(
+                modifier = Modifier.weight(1f).clickable { balanceFilter = WorkerBalanceFilter.DUE; showBalances = true },
+                label = "Total Pending",
+                amount = money(wagesDue),
+                detail = "${workerBalances.count { it.balanceMinor > 0 }} workers due",
+                accent = pendingColor
+            )
+            LedgerSummaryCard(
+                modifier = Modifier.weight(1f).clickable { balanceFilter = WorkerBalanceFilter.PAID; showBalances = true },
+                label = "Total Paid",
+                amount = money(labourTotals.totalPaidMinor),
+                detail = "Wages and advances",
+                accent = paidColor
+            )
         }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("Daily attendance", style = MaterialTheme.typography.titleMedium)
-            OutlinedButton(onClick = { pickDate = true }) { Text(dateText) }
-        }
+        Spacer(Modifier.height(18.dp))
+        SegmentedTabs(
+            labels = listOf("Active (${activeWorkers.size})", "Archived (${allWorkers.size - activeWorkers.size})"),
+            selectedIndex = if (showArchived) 1 else 0,
+            onSelected = { showArchived = it == 1 }
+        )
         if (workers.isEmpty()) {
-            Empty("No workers yet", "Add a worker to start recording attendance and wages.")
-            OutlinedButton(onClick = { addWorker = true }, modifier = Modifier.fillMaxWidth()) {
+            Empty(if (showArchived) "No archived workers" else "No workers yet", if (showArchived) "Archived workers will appear here." else "Add a worker to start tracking wages and attendance.")
+            if (!showArchived) OutlinedButton(onClick = { addWorker = true }, modifier = Modifier.fillMaxWidth()) {
                 Text("Add your first worker")
             }
         } else {
-            Text("Choose one status for every worker. Wages are calculated automatically.", style = MaterialTheme.typography.bodySmall)
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                TextButton(onClick = { statuses = workerIds.associateWith { AttendanceStatus.PRESENT } }) { Text("Mark everyone present") }
-            }
-            if (attendance.isEmpty()) Text("No attendance recorded for this date yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(vertical = 8.dp)) {
+            Text("${workers.size} ${if (workers.size == 1) "worker" else "workers"} · wage summary", style = MaterialTheme.typography.bodySmall)
+            val balancesById = workerBalances.associateBy { it.id }
+            LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(vertical = 4.dp)) {
                 items(workers.filter { showArchived || it.active }, key = { it.id }) { worker ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.weight(1f)) { AttendanceRow(worker, statuses[worker.id], onStatus = { statuses = statuses + (worker.id to it) }, onAccount = { selectedWorkerId = worker.id }) }
-                        TextButton(onClick = { scope.launch { repo.setWorkerActive(worker.id, !worker.active) } }) { Text(if (worker.active) "Archive" else "Restore") }
+                    Card(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                    ) {
+                        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    Modifier.size(42.dp).background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) { Icon(Icons.Default.People, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(20.dp)) }
+                                Spacer(Modifier.width(10.dp))
+                                Column(Modifier.weight(1f).clickable { selectedWorkerId = worker.id }) {
+                                    Text(worker.fullName, fontWeight = FontWeight.SemiBold)
+                                    val balance = balancesById[worker.id]
+                                    Text("${money(worker.dailyWageMinor)} per day · ${money(balance?.totalPaidMinor ?: 0L)} paid", style = MaterialTheme.typography.bodySmall)
+                                }
+                                TextButton(onClick = { selectedWorkerId = worker.id }) { Text("Account") }
+                                TextButton(onClick = { scope.launch { repo.setWorkerActive(worker.id, !worker.active) } }) { Text(if (worker.active) "Archive" else "Restore") }
+                            }
+                            val balance = balancesById[worker.id]
+                            Text("${if ((balance?.balanceMinor ?: 0L) > 0) "Pending" else if ((balance?.balanceMinor ?: 0L) < 0) "Paid ahead" else "Settled"}: ${money(kotlin.math.abs(balance?.balanceMinor ?: 0L))}", style = MaterialTheme.typography.bodySmall, color = if ((balance?.balanceMinor ?: 0L) > 0) pendingColor else paidColor)
+                        }
                     }
-                    HorizontalDivider()
                 }
             }
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            Button(
-                onClick = { scope.launch { runCatching { repo.saveAttendanceSheet(dateText, statuses) }.onSuccess { error = null }.onFailure { error = it.message } } },
-                enabled = statuses.keys == workerIds.toSet() && workerIds.isNotEmpty(),
-                modifier = Modifier.fillMaxWidth()
-            ) { Text(if (statuses.keys == workerIds.toSet() && workerIds.isNotEmpty()) "Save attendance" else "Choose status for every worker") }
         }
     }
     if (addWorker) WorkerForm(repo, null, onClose = { addWorker = false })
-    if (pickDate) AttendanceDatePicker(dateText, onSelect = { dateText = it; error = null }, onClose = { pickDate = false })
-    }
-}
-
-@Composable
-private fun AttendanceRow(worker: WorkerEntity, status: AttendanceStatus?, onStatus: (AttendanceStatus) -> Unit, onAccount: () -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f).clickable(onClick = onAccount)) {
-                Text(worker.fullName, fontWeight = FontWeight.SemiBold)
-                Text("${money(worker.dailyWageMinor)} per day", style = MaterialTheme.typography.bodySmall)
-            }
-            TextButton(onClick = onAccount) { Text("Account") }
-        }
-        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            AttendanceStatus.entries.forEach { choice ->
-                FilterChip(selected = status == choice, onClick = { onStatus(choice) }, label = { Text(choice.label()) })
-            }
-        }
     }
 }
 
@@ -180,6 +213,200 @@ private fun AttendanceDatePicker(value: String, onSelect: (String) -> Unit, onCl
 }
 
 @Composable
+private fun AttendanceSheetScreen(repo: LedgerRepository, onBack: () -> Unit) {
+    var monthText by rememberSaveable { mutableStateOf(YearMonth.now().toString()) }
+    val month = runCatching { YearMonth.parse(monthText) }.getOrDefault(YearMonth.now())
+    val workers by repo.workers.collectAsStateWithLifecycle(emptyList())
+    val records by repo.attendanceForRange(month.atDay(1).toString(), month.atEndOfMonth().toString()).collectAsStateWithLifecycle(emptyList())
+    var selectedCell by remember { mutableStateOf<AttendanceCell?>(null) }
+    val recordsByKey = records.associateBy { it.workerId to it.workDate }
+    val dayWidth = 46.dp
+    val nameWidth = 148.dp
+    val daysScroll = rememberScrollState()
+    Page("Attendance", onBack = onBack) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = { monthText = month.minusMonths(1).toString() }) { Text("‹") }
+            Text(month.format(DateTimeFormatter.ofPattern("MMMM yyyy", Locale.getDefault())), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            TextButton(onClick = { monthText = month.plusMonths(1).toString() }) { Text("›") }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text("${workers.size} labourers", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("${records.size} days marked", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(Modifier.weight(1f)) {
+            LazyColumn(Modifier.fillMaxWidth()) {
+                item {
+                    Row {
+                        SheetCell("LABOUR", nameWidth, true)
+                        Row(Modifier.weight(1f).horizontalScroll(daysScroll)) {
+                        (1..month.lengthOfMonth()).forEach { day ->
+                            val date = month.atDay(day)
+                            SheetCell("$day\n${date.dayOfWeek.getDisplayName(java.time.format.TextStyle.SHORT, Locale.getDefault())}", dayWidth, true)
+                        }
+                        }
+                    }
+                }
+                items(workers, key = { it.id }) { worker ->
+                    Row {
+                        Box(Modifier.width(nameWidth).height(48.dp).border(1.dp, MaterialTheme.colorScheme.outline).padding(horizontal = 8.dp), contentAlignment = Alignment.CenterStart) {
+                            Text(worker.fullName, style = MaterialTheme.typography.labelMedium, maxLines = 2)
+                        }
+                        Row(Modifier.weight(1f).horizontalScroll(daysScroll)) {
+                            (1..month.lengthOfMonth()).forEach { day ->
+                                val date = month.atDay(day).toString()
+                                val record = recordsByKey[worker.id to date]
+                                val status = record?.status
+                                val tint = when (status) {
+                                    AttendanceStatus.PRESENT -> Color(0xFFE3F7EA)
+                                    AttendanceStatus.HALF_DAY -> Color(0xFFFFF2D8)
+                                    AttendanceStatus.ABSENT -> Color(0xFFFDE8E7)
+                                    null -> MaterialTheme.colorScheme.surface
+                                }
+                                Box(Modifier.width(dayWidth).height(48.dp).border(1.dp, MaterialTheme.colorScheme.outline).background(tint).clickable { selectedCell = AttendanceCell(worker.id, worker.fullName, date, record) }, contentAlignment = Alignment.Center) {
+                                    Text(when (status) { AttendanceStatus.PRESENT -> "P"; AttendanceStatus.HALF_DAY -> "½"; AttendanceStatus.ABSENT -> "A"; null -> "" }, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text("P Present   ·   ½ Half-day   ·   A Absent   ·   Tap a cell to edit", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    selectedCell?.let { cell ->
+        AttendanceCellDialog(cell, onDismiss = { selectedCell = null }, onSave = { status ->
+            repo.saveAttendanceStatus(cell.workerId, cell.date, status)
+        }, onClear = { record -> repo.deleteAttendance(record.id) })
+    }
+}
+
+private data class AttendanceCell(val workerId: String, val workerName: String, val date: String, val record: AttendanceEntity?)
+
+@Composable
+private fun SheetCell(text: String, width: androidx.compose.ui.unit.Dp, header: Boolean) {
+    Box(Modifier.width(width).height(48.dp).border(1.dp, MaterialTheme.colorScheme.outline).background(if (header) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface).padding(2.dp), contentAlignment = Alignment.Center) {
+        Text(text, style = MaterialTheme.typography.labelSmall, fontWeight = if (header) FontWeight.Bold else FontWeight.Normal, textAlign = androidx.compose.ui.text.style.TextAlign.Center, lineHeight = 13.sp)
+    }
+}
+
+@Composable
+private fun AttendanceCellDialog(cell: AttendanceCell, onDismiss: () -> Unit, onSave: suspend (AttendanceStatus) -> Unit, onClear: suspend (AttendanceEntity) -> Unit) {
+    var selected by remember(cell.date, cell.record?.id) { mutableStateOf(cell.record?.status ?: AttendanceStatus.PRESENT) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var saving by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    AlertDialog(
+        onDismissRequest = { if (!saving) onDismiss() },
+        title = { Text(cell.workerName) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(displayDate(cell.date))
+                AttendanceStatus.entries.forEach { status -> FilterChip(selected == status, onClick = { selected = status }, label = { Text(status.label()) }) }
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            }
+        },
+        confirmButton = { TextButton(enabled = !saving, onClick = {
+            saving = true; error = null
+            scope.launch {
+                try { onSave(selected); onDismiss() } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled } catch (exception: Exception) { error = exception.message ?: "Could not save attendance." } finally { saving = false }
+            }
+        }) { Text(if (saving) "Saving…" else "Save") } },
+        dismissButton = {
+            Row {
+                if (cell.record != null) TextButton(enabled = !saving, onClick = {
+                    saving = true; error = null
+                    scope.launch {
+                        try { onClear(cell.record); onDismiss() } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled } catch (exception: Exception) { error = exception.message ?: "Could not remove attendance." } finally { saving = false }
+                    }
+                }) { Text("Clear") }
+                TextButton(enabled = !saving, onClick = onDismiss) { Text("Cancel") }
+            }
+        }
+    )
+}
+
+@Composable
+private fun WorkerBalancesScreen(repo: LedgerRepository, initialFilter: WorkerBalanceFilter, onBack: () -> Unit, onSelectWorker: (String) -> Unit) {
+    val balances by repo.workerBalances.collectAsStateWithLifecycle(emptyList())
+    val owedToWorkers = balances.filter { it.balanceMinor > 0 }.sumOf { it.balanceMinor }
+    val advancesAhead = balances.filter { it.balanceMinor < 0 }.sumOf { -it.balanceMinor }
+    var filter by rememberSaveable { mutableStateOf(initialFilter) }
+    val filtered = when (filter) {
+        WorkerBalanceFilter.ALL -> balances
+        WorkerBalanceFilter.DUE -> balances.filter { it.balanceMinor > 0 }
+        WorkerBalanceFilter.PAID -> balances.filter { it.totalPaidMinor > 0 }
+        WorkerBalanceFilter.PAID_AHEAD -> balances.filter { it.balanceMinor < 0 }
+    }
+    val ordered = filtered.sortedWith(
+        compareBy<WorkerBalance> { when (filter) { WorkerBalanceFilter.PAID -> if (it.totalPaidMinor > 0) 0 else 1; else -> when { it.balanceMinor > 0 -> 0; it.balanceMinor < 0 -> 1; else -> 2 } } }
+            .thenByDescending { if (filter == WorkerBalanceFilter.PAID) it.totalPaidMinor else 0L }
+            .thenBy { !it.active }
+            .thenBy { it.name }
+    )
+    Page("Worker balances", onBack = onBack) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            LedgerSummaryCard(
+                modifier = Modifier.weight(1f),
+                label = "Wages due",
+                amount = money(owedToWorkers),
+                detail = "${balances.count { it.balanceMinor > 0 }} workers",
+                accent = pendingColor
+            )
+            LedgerSummaryCard(
+                modifier = Modifier.weight(1f),
+                label = "Paid ahead",
+                amount = money(advancesAhead),
+                detail = "${balances.count { it.balanceMinor < 0 }} workers",
+                accent = paidColor
+            )
+        }
+        Spacer(Modifier.height(18.dp))
+        SegmentedTabs(
+            labels = listOf("All (${balances.size})", "Pending (${balances.count { it.balanceMinor > 0 }})", "Paid (${balances.count { it.totalPaidMinor > 0 }})", "Credit (${balances.count { it.balanceMinor < 0 }})"),
+            selectedIndex = when (filter) { WorkerBalanceFilter.ALL -> 0; WorkerBalanceFilter.DUE -> 1; WorkerBalanceFilter.PAID -> 2; WorkerBalanceFilter.PAID_AHEAD -> 3 },
+            onSelected = { filter = when (it) { 1 -> WorkerBalanceFilter.DUE; 2 -> WorkerBalanceFilter.PAID; 3 -> WorkerBalanceFilter.PAID_AHEAD; else -> WorkerBalanceFilter.ALL } }
+        )
+        Spacer(Modifier.height(12.dp))
+        if (balances.isEmpty()) {
+            Empty("No workers yet", "Add a worker to start tracking wages and advances.")
+        } else if (filtered.isEmpty()) {
+            Empty("Nothing to show", "No workers match this balance filter.")
+        } else {
+            LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(bottom = 20.dp)) {
+                items(ordered, key = { it.id }) { item ->
+                    val (label, amount, color) = when {
+                        filter == WorkerBalanceFilter.PAID -> Triple("Paid to date", money(item.totalPaidMinor), paidColor)
+                        item.balanceMinor > 0 -> Triple("We owe", money(item.balanceMinor), pendingColor)
+                        item.balanceMinor < 0 -> Triple("Paid ahead (worker owes us)", money(-item.balanceMinor), paidColor)
+                        else -> Triple("Settled", money(0), MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Card(
+                        modifier = Modifier.fillMaxWidth().clickable { onSelectWorker(item.id) },
+                        shape = RoundedCornerShape(14.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                    ) {
+                        Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.size(44.dp).background(MaterialTheme.colorScheme.primaryContainer, CircleShape), contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.People, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(item.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                                Text("$label${if (item.active) "" else " · Archived"}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Text(amount, color = color, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun WorkerProfile(repo: LedgerRepository, workerId: String, onBack: () -> Unit) {
     BackHandler { onBack() }
     val worker by repo.worker(workerId).collectAsStateWithLifecycle(null)
@@ -188,10 +415,13 @@ private fun WorkerProfile(repo: LedgerRepository, workerId: String, onBack: () -
     var entryType by remember { mutableStateOf<WorkerEntryType?>(null) }
     var editWorker by remember { mutableStateOf(false) }
     var photoToView by remember { mutableStateOf<String?>(null) }
+    var attendanceToEdit by remember { mutableStateOf<AttendanceEntity?>(null) }
     var attendanceToDelete by remember { mutableStateOf<AttendanceEntity?>(null) }
     var entryToDelete by remember { mutableStateOf<WorkerLedgerEntryEntity?>(null) }
     var deleteError by remember { mutableStateOf<String?>(null) }
+    var attendanceEditError by remember { mutableStateOf<String?>(null) }
     var isDeleting by remember { mutableStateOf(false) }
+    var isSavingAttendance by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val balance = LedgerBalances.workerBalance(attendance.map { it.earnedMinor }, entries.map { it.amountMinor })
     Page("Worker account", onBack = onBack) {
@@ -201,7 +431,7 @@ private fun WorkerProfile(repo: LedgerRepository, workerId: String, onBack: () -
             Text("Full day: ${money(current.dailyWageMinor)} • Half-day: ${money(current.halfDayWageMinor)}${current.phone?.let { " • $it" } ?: ""}")
             Text(
                 if (balance > 0) "Wages due: ${money(balance)}" else if (balance < 0) "Advance paid ahead: ${money(-balance)}" else "Settled",
-                color = when { balance > 0 -> MaterialTheme.colorScheme.error; balance < 0 -> gainColor; else -> MaterialTheme.colorScheme.onSurface },
+                color = when { balance > 0 -> pendingColor; balance < 0 -> paidColor; else -> MaterialTheme.colorScheme.onSurface },
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -218,8 +448,13 @@ private fun WorkerProfile(repo: LedgerRepository, workerId: String, onBack: () -
                         headlineContent = { Text("${record.status.label()} • earned ${money(record.earnedMinor)}") },
                         supportingContent = { Text(record.workDate) },
                         trailingContent = {
-                            IconButton(onClick = { deleteError = null; attendanceToDelete = record }) {
-                                Icon(Icons.Default.Delete, contentDescription = "Delete attendance")
+                            Row {
+                                IconButton(onClick = { attendanceEditError = null; attendanceToEdit = record }) {
+                                    Icon(Icons.Default.Edit, contentDescription = "Edit attendance")
+                                }
+                                IconButton(onClick = { deleteError = null; attendanceToDelete = record }) {
+                                    Icon(Icons.Default.Delete, contentDescription = "Delete attendance")
+                                }
                             }
                         }
                     )
@@ -246,6 +481,23 @@ private fun WorkerProfile(repo: LedgerRepository, workerId: String, onBack: () -
     if (worker != null && editWorker) WorkerForm(repo, worker, onClose = { editWorker = false })
     if (worker != null && entryType != null) WorkerEntryForm(repo, workerId, entryType!!, onClose = { entryType = null })
     photoToView?.let { PhotoPreviewDialog(it) { photoToView = null } }
+    attendanceToEdit?.let { record ->
+        AttendanceEditDialog(
+            record = record,
+            error = attendanceEditError,
+            saving = isSavingAttendance,
+            onDismiss = { if (!isSavingAttendance) attendanceToEdit = null },
+            onSave = { status ->
+                if (!isSavingAttendance) scope.launch {
+                    isSavingAttendance = true
+                    runCatching { repo.updateAttendanceStatus(record.id, status) }
+                        .onSuccess { attendanceToEdit = null; attendanceEditError = null }
+                        .onFailure { attendanceEditError = it.message ?: "Could not update attendance." }
+                    isSavingAttendance = false
+                }
+            }
+        )
+    }
     attendanceToDelete?.let { record ->
         DeleteConfirmationDialog(
             title = "Delete attendance?",
@@ -285,6 +537,36 @@ private fun WorkerProfile(repo: LedgerRepository, workerId: String, onBack: () -
 }
 
 @Composable
+private fun AttendanceEditDialog(
+    record: AttendanceEntity,
+    error: String?,
+    saving: Boolean,
+    onDismiss: () -> Unit,
+    onSave: (AttendanceStatus) -> Unit
+) {
+    var selected by remember(record.id) { mutableStateOf(record.status) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Edit attendance") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Attendance date: ${record.workDate}")
+                AttendanceStatus.entries.forEach { status ->
+                    FilterChip(
+                        selected = selected == status,
+                        onClick = { selected = status },
+                        label = { Text(status.label()) }
+                    )
+                }
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onSave(selected) }, enabled = !saving) { Text(if (saving) "Saving…" else "Save") } },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !saving) { Text("Cancel") } }
+    )
+}
+
+@Composable
 private fun WorkerEntryForm(repo: LedgerRepository, workerId: String, type: WorkerEntryType, onClose: () -> Unit) {
     var amount by remember { mutableStateOf("") }
     var date by remember { mutableStateOf(LocalDate.now().toString()) }
@@ -320,26 +602,69 @@ private fun AccountsScreen(repo: LedgerRepository) {
     var showArchived by rememberSaveable { mutableStateOf(false) }
     val allAccounts by repo.allCounterparties.collectAsStateWithLifecycle(emptyList())
     val activeBalances by repo.counterpartyBalances.collectAsStateWithLifecycle(emptyList())
-    val accounts = if (showArchived) allAccounts.map { entity -> CounterpartyBalance(entity.id, entity.name, entity.type, activeBalances.firstOrNull { it.id == entity.id }?.balanceMinor ?: 0L) } else activeBalances
+    val accounts = if (showArchived) allAccounts.filterNot { it.active }.map { entity -> CounterpartyBalance(entity.id, entity.name, entity.type, activeBalances.firstOrNull { it.id == entity.id }?.balanceMinor ?: 0L) } else activeBalances
+    val activeAccountCount = allAccounts.count { it.active }
     val scope = rememberCoroutineScope()
     var add by remember { mutableStateOf(false) }
+    val receivable = activeBalances.filter { it.balanceMinor > 0 }.sumOf { it.balanceMinor }
+    val payable = activeBalances.filter { it.balanceMinor < 0 }.sumOf { -it.balanceMinor }
     if (selectedId != null) CounterpartyProfile(repo, selectedId!!, onBack = { selectedId = null }) else Page("Accounts", onAdd = { add = true }) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) { TextButton(onClick = { showArchived = !showArchived }) { Text(if (showArchived) "Show active" else "Show archived") } }
-        if (accounts.isEmpty()) Empty("No accounts yet", "Add a site owner or supplier to start a ledger.") else LazyColumn {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            LedgerSummaryCard(
+                modifier = Modifier.weight(1f),
+                label = "They owe us",
+                amount = money(receivable),
+                detail = "${activeBalances.count { it.balanceMinor > 0 }} accounts",
+                accent = paidColor
+            )
+            LedgerSummaryCard(
+                modifier = Modifier.weight(1f),
+                label = "We owe",
+                amount = money(payable),
+                detail = "${activeBalances.count { it.balanceMinor < 0 }} accounts",
+                accent = pendingColor
+            )
+        }
+        Spacer(Modifier.height(18.dp))
+        SegmentedTabs(
+            labels = listOf("Active ($activeAccountCount)", "Archived (${allAccounts.size - activeAccountCount})"),
+            selectedIndex = if (showArchived) 1 else 0,
+            onSelected = { showArchived = it == 1 }
+        )
+        if (accounts.isEmpty()) Empty(if (showArchived) "No archived accounts" else "No accounts yet", if (showArchived) "Archived accounts will appear here." else "Add a site owner or supplier to start a ledger.") else LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(vertical = 8.dp)) {
             items(accounts, key = { it.id }) { account ->
-                ListItem(
-                    modifier = Modifier.clickable { selectedId = account.id },
-                    headlineContent = { Text(account.name) },
-                    supportingContent = { Text(if (account.type == CounterpartyType.SITE_OWNER) "Site owner" else "Supplier") },
-                    trailingContent = {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            val balance = account.balanceMinor
-                            Text(if (balance > 0) "They owe ${money(balance)}" else if (balance < 0) "We owe ${money(-balance)}" else "Settled", color = when { balance > 0 -> gainColor; balance < 0 -> MaterialTheme.colorScheme.error; else -> MaterialTheme.colorScheme.onSurface }, fontWeight = FontWeight.SemiBold)
+                val entity = allAccounts.first { it.id == account.id }
+                val balance = account.balanceMinor
+                Card(
+                    Modifier.fillMaxWidth().padding(vertical = 5.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                ) {
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                        Row(
+                            Modifier.fillMaxWidth().clickable { selectedId = account.id },
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(account.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                                Text(if (account.type == CounterpartyType.SITE_OWNER) "Site owner" else "Supplier", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Column(horizontalAlignment = Alignment.End) {
+                                Text(
+                                    if (balance > 0) "They owe" else if (balance < 0) "We owe" else "Settled",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                if (balance != 0L) Text(money(kotlin.math.abs(balance)), color = if (balance > 0) paidColor else pendingColor, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            TextButton(onClick = { scope.launch { repo.setCounterpartyActive(account.id, !entity.active) } }) { Text(if (entity.active) "Archive" else "Restore") }
                         }
                     }
-                )
-                TextButton(onClick = { scope.launch { repo.setCounterpartyActive(account.id, !allAccounts.first { it.id == account.id }.active) } }) { Text(if (allAccounts.first { it.id == account.id }.active) "Archive" else "Restore") }
-                HorizontalDivider()
+                }
             }
         }
     }
@@ -366,7 +691,7 @@ private fun CounterpartyProfile(repo: LedgerRepository, id: String, onBack: () -
             TextButton(onClick = { editAccount = true }) { Text("Edit account details") }
             Text(
                 if (balance > 0) "They owe us: ${money(balance)}" else if (balance < 0) "We owe them: ${money(-balance)}" else "Settled",
-                color = when { balance > 0 -> gainColor; balance < 0 -> MaterialTheme.colorScheme.error; else -> MaterialTheme.colorScheme.onSurface },
+                color = when { balance > 0 -> paidColor; balance < 0 -> pendingColor; else -> MaterialTheme.colorScheme.onSurface },
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -375,7 +700,7 @@ private fun CounterpartyProfile(repo: LedgerRepository, id: String, onBack: () -
             LazyColumn(Modifier.weight(1f)) {
                 items(entries, key = { it.id }) { entry ->
                     ListItem(
-                        headlineContent = { Text("${if (entry.direction == AccountDirection.THEY_OWE_US) "They owe us" else "We owe them"} • ${money(entry.amountMinor)}", color = if (entry.direction == AccountDirection.THEY_OWE_US) gainColor else MaterialTheme.colorScheme.error) },
+                        headlineContent = { Text("${if (entry.direction == AccountDirection.THEY_OWE_US) "They owe us" else "We owe them"} • ${money(entry.amountMinor)}", color = if (entry.direction == AccountDirection.THEY_OWE_US) paidColor else pendingColor) },
                         supportingContent = { Text("${entry.entryDate}${entry.note.takeIf { it.isNotBlank() }?.let { " • $it" } ?: ""}") },
                         trailingContent = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -534,11 +859,69 @@ private fun PhotoPreviewDialog(path: String, onClose: () -> Unit) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun Page(title: String, onAdd: (() -> Unit)? = null, onBack: (() -> Unit)? = null, content: @Composable ColumnScope.() -> Unit) {
-    Scaffold(topBar = {
-        TopAppBar(title = { Text(title) }, navigationIcon = { if (onBack != null) IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } }, actions = {
-            if (onAdd != null) IconButton(onClick = onAdd) { Icon(Icons.Default.Add, "Add") }
+    Scaffold(containerColor = MaterialTheme.colorScheme.background, topBar = {
+        TopAppBar(
+            title = { Text(title, fontSize = 26.sp, fontWeight = FontWeight.Bold) },
+            colors = TopAppBarDefaults.topAppBarColors(
+                containerColor = MaterialTheme.colorScheme.background,
+                titleContentColor = MaterialTheme.colorScheme.onSurface,
+                navigationIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                actionIconContentColor = MaterialTheme.colorScheme.primary
+            ),
+            navigationIcon = { if (onBack != null) IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+            actions = {
+            if (onAdd != null) IconButton(
+                onClick = onAdd,
+                modifier = Modifier.padding(end = 8.dp).size(40.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary)
+            ) { Icon(Icons.Default.Add, "Add", tint = MaterialTheme.colorScheme.onPrimary) }
         })
     }) { padding -> Column(Modifier.padding(padding).padding(horizontal = 16.dp, vertical = 8.dp).fillMaxSize(), content = content) }
+}
+
+@Composable
+private fun LedgerSummaryCard(label: String, amount: String, detail: String, accent: Color, modifier: Modifier = Modifier) {
+    Card(
+        modifier = modifier,
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+            Text(amount, fontSize = 19.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+            Text(detail, style = MaterialTheme.typography.labelSmall, color = accent, fontWeight = FontWeight.Medium, maxLines = 1)
+        }
+    }
+}
+
+@Composable
+private fun SegmentedTabs(labels: List<String>, selectedIndex: Int, onSelected: (Int) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        labels.forEachIndexed { index, label ->
+            val selected = index == selectedIndex
+            val shape = RoundedCornerShape(10.dp)
+            Box(
+                Modifier.weight(1f)
+                    .then(if (selected) Modifier.shadow(2.dp, shape) else Modifier)
+                    .clip(shape)
+                    .background(if (selected) MaterialTheme.colorScheme.surface else Color.Transparent)
+                    .clickable { onSelected(index) }
+                    .padding(vertical = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    label,
+                    fontSize = 13.sp,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                    color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
+                )
+            }
+        }
+    }
 }
 
 @Composable

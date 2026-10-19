@@ -5,8 +5,9 @@ SiteLedger is an offline-first Android app for tracking construction-site labour
 ## Features
 
 - Keep a worker register with full-day and half-day wage rates.
-- Record and correct daily attendance. Present, half-day, and absent records use the wage rates saved for that date.
+- Record monthly attendance in a spreadsheet-style sheet with a fixed worker-name column and horizontally scrollable days. Mark, edit, or clear present, half-day, and absent records; saved wage rates remain tied to each attendance date.
 - Review each worker's attendance, advances, wage payments, and running balance.
+- Open paid and pending wage summaries to see per-worker totals.
 - Record dated account entries showing whether a site owner or supplier owes you or you owe them.
 - Edit worker and account details, and delete mistaken attendance or ledger entries with confirmation.
 - Attach a photo from the camera or gallery as proof for a payment or account entry.
@@ -50,4 +51,4 @@ The current database schema is version 4. Upgrading a version 3 database preserv
 
 ## License
 
-No license has been selected yet. GitHub does not automatically grant permission to reuse or redistribute this code; add a `LICENSE` file before inviting public contributions or redistribution.
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
