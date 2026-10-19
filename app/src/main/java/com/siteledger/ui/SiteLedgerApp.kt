@@ -1,5 +1,12 @@
 package com.siteledger.ui
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.net.Uri
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
 import androidx.compose.foundation.BorderStroke
@@ -29,6 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -36,6 +44,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.siteledger.data.*
 import com.siteledger.domain.LedgerBalances
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.text.NumberFormat
@@ -71,6 +81,26 @@ private fun parseNonNegativeMoney(text: String): Long? = runCatching {
 @Composable
 fun SiteLedgerApp(repository: LedgerRepository) {
     var destination by rememberSaveable { mutableStateOf(Destination.LABOUR) }
+    val context = LocalContext.current
+    val activity = remember(context) { context.findActivity() }
+    val scope = rememberCoroutineScope()
+    var showBackupOptions by remember { mutableStateOf(false) }
+    var showRestoreConfirmation by remember { mutableStateOf(false) }
+    var restoreUri by remember { mutableStateOf<Uri?>(null) }
+    var transferBusy by remember { mutableStateOf(false) }
+    var transferError by remember { mutableStateOf<String?>(null) }
+    val createBackup = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        if (uri != null) scope.launch {
+            transferBusy = true
+            val result = runCatching { withContext(Dispatchers.IO) { LedgerBackupManager(context).export(uri) } }
+            transferBusy = false
+            result.onSuccess { Toast.makeText(context, "SiteLedger backup saved.", Toast.LENGTH_LONG).show() }
+                .onFailure { transferError = it.message ?: "Could not create the backup." }
+        }
+    }
+    val selectBackup = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) { restoreUri = uri; showRestoreConfirmation = true }
+    }
     Scaffold(containerColor = MaterialTheme.colorScheme.background, bottomBar = {
         NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
             listOf(Destination.LABOUR to Icons.Default.People, Destination.ACCOUNTS to Icons.Default.AccountBalance).forEach { (item, icon) ->
@@ -93,10 +123,64 @@ fun SiteLedgerApp(repository: LedgerRepository) {
         Box(Modifier.padding(padding)) {
             when (destination) {
                 Destination.LABOUR -> LabourScreen(repository)
-                Destination.ACCOUNTS -> AccountsScreen(repository)
+                Destination.ACCOUNTS -> AccountsScreen(repository, onManageBackups = { showBackupOptions = true })
             }
         }
     }
+    if (showBackupOptions) AlertDialog(
+        onDismissRequest = { showBackupOptions = false },
+        title = { Text("Export or import data") },
+        text = { Text("A backup includes your workers, attendance, wages, accounts, and attached proof photos. The ZIP is not encrypted and may contain private financial information, so store it somewhere safe. Restoring replaces the data currently on this phone.") },
+        confirmButton = { TextButton(onClick = {
+            showBackupOptions = false
+            createBackup.launch("siteledger-backup-${LocalDate.now()}.zip")
+        }) { Text("Export backup") } },
+        dismissButton = { Row {
+            TextButton(onClick = { showBackupOptions = false; selectBackup.launch(arrayOf("application/zip", "application/octet-stream", "application/x-zip-compressed")) }) { Text("Import backup") }
+            TextButton(onClick = { showBackupOptions = false }) { Text("Cancel") }
+        } }
+    )
+    if (showRestoreConfirmation) AlertDialog(
+        onDismissRequest = { showRestoreConfirmation = false; restoreUri = null },
+        title = { Text("Replace data with this import?") },
+        text = { Text("Restoring replaces the workers, attendance, wages, accounts, and proof photos currently stored on this phone. This cannot be undone. Create a backup of the current phone first if you need to keep its data.") },
+        confirmButton = { TextButton(onClick = {
+            val uri = restoreUri
+            showRestoreConfirmation = false
+            restoreUri = null
+            if (uri != null) scope.launch {
+                transferBusy = true
+                val result = runCatching { withContext(Dispatchers.IO) { LedgerBackupManager(context).restore(uri) } }
+                transferBusy = false
+                result.onSuccess {
+                    Toast.makeText(context, "Backup restored.", Toast.LENGTH_LONG).show()
+                    activity?.recreate()
+                }.onFailure {
+                    Toast.makeText(context, it.message ?: "Could not restore this backup.", Toast.LENGTH_LONG).show()
+                    activity?.recreate()
+                }
+            }
+        }) { Text("Import and replace") } },
+        dismissButton = { TextButton(onClick = { showRestoreConfirmation = false; restoreUri = null }) { Text("Cancel") } }
+    )
+    if (transferBusy) AlertDialog(
+        onDismissRequest = {},
+        title = { Text("Working with backup…") },
+        text = { Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) { CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp); Text("Keep SiteLedger open until this finishes.") } },
+        confirmButton = {}
+    )
+    transferError?.let { message -> AlertDialog(
+        onDismissRequest = { transferError = null },
+        title = { Text("Backup failed") },
+        text = { Text(message) },
+        confirmButton = { TextButton(onClick = { transferError = null }) { Text("OK") } }
+    ) }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }
 
 @Composable
@@ -596,7 +680,7 @@ private fun WorkerEntryForm(repo: LedgerRepository, workerId: String, type: Work
 }
 
 @Composable
-private fun AccountsScreen(repo: LedgerRepository) {
+private fun AccountsScreen(repo: LedgerRepository, onManageBackups: () -> Unit) {
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
     BackHandler(selectedId != null) { selectedId = null }
     var showArchived by rememberSaveable { mutableStateOf(false) }
@@ -626,6 +710,8 @@ private fun AccountsScreen(repo: LedgerRepository) {
             )
         }
         Spacer(Modifier.height(18.dp))
+        OutlinedButton(onClick = onManageBackups, modifier = Modifier.fillMaxWidth()) { Text("Export / import data") }
+        Spacer(Modifier.height(12.dp))
         SegmentedTabs(
             labels = listOf("Active ($activeAccountCount)", "Archived (${allAccounts.size - activeAccountCount})"),
             selectedIndex = if (showArchived) 1 else 0,

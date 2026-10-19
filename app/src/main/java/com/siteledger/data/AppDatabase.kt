@@ -125,5 +125,10 @@ abstract class AppDatabase : RoomDatabase() {
                 .addMigrations(MIGRATION_3_4)
                 .build().also { instance = it }
         }
+
+        fun closeAndReset() = synchronized(this) {
+            instance?.close()
+            instance = null
+        }
     }
 }

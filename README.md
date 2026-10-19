@@ -8,8 +8,9 @@ SiteLedger is an offline-first Android app for managing construction-site labour
 - **Attendance:** view the month in a spreadsheet-style grid. Worker names stay fixed while the days scroll horizontally. Tap a cell to mark or edit a day as present, half-day, or absent, or clear an existing mark.
 - **Wages:** review each worker's attendance, advances, wage payments, and balance. The paid and pending totals open worker-by-worker breakdowns. Delete mistaken attendance or payments with confirmation.
 - **Accounts:** track dated amounts that site owners or suppliers owe you, or that you owe them; edit account details and remove mistaken entries.
+- **Phone transfer:** create a portable backup ZIP containing your ledger and attached proof photos, then restore it on another phone from the Accounts screen.
 - **Payment proof:** attach a photo from the camera or gallery to a payment or account entry.
-- **Offline storage:** records and photos are kept in the app's private storage on the device. The app currently has no cloud sync or export/restore feature.
+- **Offline storage:** records and photos are kept in the app's private storage on the device. There is no automatic cloud sync; use manual backups to move or protect your records.
 
 ## Requirements
 
@@ -54,6 +55,10 @@ The Android build workflow runs for pushes, pull requests, and manual runs. It b
 ## Data and privacy
 
 Money amounts are stored as integer minor units (paisa) in a local Room database. Database records and attached photos are kept in the app's private storage. There is no account registration or cloud sync. **Back up important records separately**: the app does not currently provide an export or restore flow, and clearing app data or uninstalling can remove locally stored records.
+
+To move data to a new phone, choose **Accounts → Export / import data → Export backup**, save the ZIP somewhere you can access from the new phone, install SiteLedger there, then choose **Import backup** and select the ZIP. Keep backups somewhere safe: they include private financial records and photos and are **not encrypted**. Importing replaces the data currently on that phone.
+
+On Android, **Clear cache** removes temporary cached files; it does not clear SiteLedger's database or proof photos, which are stored in private app data. **Clear storage/data** or uninstalling the app can erase them, so create and keep a backup before either action or before changing phones.
 
 The current database schema is version 4. Upgrading a version 3 database preserves ledger data and adds configurable half-day rates. The older version 1 or 2 project/material prototype is not migrated; its local records are cleared when creating the ledger schema.
 
