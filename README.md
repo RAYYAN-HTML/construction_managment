@@ -1,51 +1,62 @@
 # SiteLedger
 
-SiteLedger is an offline-first Android app for tracking construction-site labour, wages, advances, and balances with site owners and suppliers.
+SiteLedger is an offline-first Android app for managing construction-site labour, attendance, wages, and site-owner or supplier accounts. It keeps records on the device, so you can use it without an internet connection.
 
 ## Features
 
-- Keep a worker register with full-day and half-day wage rates.
-- Record and correct daily attendance. Present, half-day, and absent records use the wage rates saved for that date.
-- Review each worker's attendance, advances, wage payments, and running balance.
-- Record dated account entries showing whether a site owner or supplier owes you or you owe them.
-- Edit worker and account details, and delete mistaken attendance or ledger entries with confirmation.
-- Attach a photo from the camera or gallery as proof for a payment or account entry.
-- Store data on the device and work offline. There is no in-app cloud sync or export/restore feature.
+- **Labour:** add, edit, archive, and restore workers; keep daily and half-day wage rates.
+- **Attendance:** view the month in a spreadsheet-style grid. Worker names stay fixed while the days scroll horizontally. Tap a cell to mark or edit a day as present, half-day, or absent, or clear an existing mark.
+- **Wages:** review each worker's attendance, advances, wage payments, and balance. The paid and pending totals open worker-by-worker breakdowns. Delete mistaken attendance or payments with confirmation.
+- **Accounts:** track dated amounts that site owners or suppliers owe you, or that you owe them; edit account details and remove mistaken entries.
+- **Payment proof:** attach a photo from the camera or gallery to a payment or account entry.
+- **Offline storage:** records and photos are kept in the app's private storage on the device. The app currently has no cloud sync or export/restore feature.
 
 ## Requirements
 
-- Android Studio with JDK 17 or newer.
+- Android Studio with JDK 17 or later.
 - Android SDK Platform 35.
-- Android 7.0 (API 24) or newer to install the app.
+- Android 7.0 (API 24) or later for installation.
+- Internet access on the first build so Gradle can download the configured Gradle distribution and dependencies.
 
-The Gradle wrapper and dependency versions are included. The first build needs internet access to download Gradle and dependencies.
+## Build
 
-## Build and install
-
-Open the repository in Android Studio, let Gradle sync, then run the `app` configuration on a device or emulator.
-
-To build a debug APK from a terminal:
+Clone the repository and open it in Android Studio, or build from a terminal:
 
 ```shell
-# Windows
-gradlew.bat :app:assembleDebug
-
-# macOS or Linux
-bash ./gradlew :app:assembleDebug
+git clone https://github.com/RAYYAN-HTML/construction_managment.git
+cd construction_managment
 ```
 
-The APK is written to `app/build/outputs/apk/debug/app-debug.apk`. To install it on a connected device with Android Debug Bridge:
+```powershell
+# Windows
+.\gradlew.bat :app:assembleDebug
+.\gradlew.bat :app:testDebugUnitTest
+```
+
+```shell
+# macOS or Linux
+bash ./gradlew :app:assembleDebug
+bash ./gradlew :app:testDebugUnitTest
+```
+
+The debug APK is generated at `app/build/outputs/apk/debug/app-debug.apk`. Install it on a connected device with Android Debug Bridge:
 
 ```shell
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-The GitHub Actions workflow builds the debug APK for pushes and pull requests and makes it available as a downloadable workflow artifact. Debug APKs are for testing; publishing a production release requires release signing and a stable, unique application ID.
+Debug builds are for testing. A production release should use release signing and a stable, unique application ID.
 
-## Data and migrations
+## GitHub Actions
 
-The Room database stores money in integer minor units (paisa). Photos and database records are stored in the app's private device storage. Removing a ledger entry also removes its attached proof photo.
+The Android build workflow runs for pushes, pull requests, and manual runs. It builds the debug APK and publishes it as a workflow artifact for 14 days. Open the workflow run on GitHub and download the `SiteLedger-debug-apk` artifact.
 
-The current database schema is version 4. Upgrading a version 3 database preserves ledger data and adds configurable half-day rates. Upgrading the older version 1 or 2 project/material prototype clears its local records when creating the ledger schema; those old records are not migrated.
+## Data and privacy
 
+Money amounts are stored as integer minor units (paisa) in a local Room database. Database records and attached photos are kept in the app's private storage. There is no account registration or cloud sync. **Back up important records separately**: the app does not currently provide an export or restore flow, and clearing app data or uninstalling can remove locally stored records.
 
+The current database schema is version 4. Upgrading a version 3 database preserves ledger data and adds configurable half-day rates. The older version 1 or 2 project/material prototype is not migrated; its local records are cleared when creating the ledger schema.
+
+## License
+
+SiteLedger is licensed under the MIT License. See [LICENSE](LICENSE) for details.

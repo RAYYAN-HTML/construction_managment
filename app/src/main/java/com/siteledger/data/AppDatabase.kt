@@ -35,9 +35,14 @@ interface LedgerDao {
     @Query("SELECT * FROM workers WHERE id = :workerId") suspend fun workerOnce(workerId: String): WorkerEntity?
     @Query("SELECT * FROM attendance WHERE workDate = :date") fun attendanceForDate(date: String): Flow<List<AttendanceEntity>>
     @Query("SELECT * FROM attendance WHERE workDate = :date") suspend fun attendanceForDateOnce(date: String): List<AttendanceEntity>
+    @Query("SELECT * FROM attendance WHERE workDate BETWEEN :startDate AND :endDate ORDER BY workDate, workerId") fun attendanceForRange(startDate: String, endDate: String): Flow<List<AttendanceEntity>>
+    @Query("SELECT * FROM attendance WHERE id = :id") suspend fun attendanceOnce(id: String): AttendanceEntity?
+    @Query("UPDATE attendance SET status = :status, earnedMinor = :earnedMinor WHERE id = :id") suspend fun updateAttendance(id: String, status: AttendanceStatus, earnedMinor: Long)
     @Query("DELETE FROM attendance WHERE id = :id") suspend fun deleteAttendance(id: String)
     @Query("SELECT (SELECT COALESCE(SUM(earnedMinor), 0) FROM attendance) AS totalEarnedMinor, (SELECT COALESCE(SUM(amountMinor), 0) FROM worker_ledger_entries) AS totalPaidMinor")
     fun labourTotals(): Flow<LabourTotals>
+    @Query("SELECT w.id, w.fullName AS name, w.active, COALESCE((SELECT SUM(a.earnedMinor) FROM attendance a WHERE a.workerId = w.id), 0) AS totalEarnedMinor, COALESCE((SELECT SUM(e.amountMinor) FROM worker_ledger_entries e WHERE e.workerId = w.id), 0) AS totalPaidMinor, COALESCE((SELECT SUM(a.earnedMinor) FROM attendance a WHERE a.workerId = w.id), 0) - COALESCE((SELECT SUM(e.amountMinor) FROM worker_ledger_entries e WHERE e.workerId = w.id), 0) AS balanceMinor FROM workers w ORDER BY w.active DESC, w.fullName")
+    fun workerBalances(): Flow<List<WorkerBalance>>
     @Query("SELECT * FROM attendance WHERE workerId = :workerId ORDER BY workDate DESC") fun workerAttendance(workerId: String): Flow<List<AttendanceEntity>>
     @Query("SELECT * FROM worker_ledger_entries WHERE workerId = :workerId ORDER BY entryDate DESC, createdAt DESC") fun workerEntries(workerId: String): Flow<List<WorkerLedgerEntryEntity>>
     @Query("SELECT * FROM worker_ledger_entries WHERE id = :id") suspend fun workerEntryOnce(id: String): WorkerLedgerEntryEntity?
